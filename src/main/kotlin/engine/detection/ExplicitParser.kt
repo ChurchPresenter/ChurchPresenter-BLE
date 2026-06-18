@@ -56,8 +56,11 @@ object ExplicitParser {
     private fun parseSuffix(suffix: String): ChapterVerse? {
         var s = suffix.trimStart()
 
-        // Optional "chapter" / "глав*" keyword
-        s = s.replace(Regex("^(?:chapter|глав[ауые]?)\\s+", RegexOption.IGNORE_CASE), "").trimStart()
+        // Optional chapter keyword (EN/DE/FR/ES/PT/UK/RO/PL + RU)
+        s = s.replace(
+            Regex("^(?:chapters?|глав[ауые]?|kapitel|kap|chapitre|cap[íi]tulo|capitulo|розділ|capitol|rozd[zź]ia[łl])\\s+",
+                RegexOption.IGNORE_CASE), ""
+        ).trimStart()
 
         // Chapter number (required)
         val chMatch = Regex("^(\\d+)").find(s) ?: return null
@@ -70,8 +73,11 @@ object ExplicitParser {
         // Skip separator: ":", ".", ","
         s = s.replace(Regex("^[:\\.,]\\s*"), "")
 
-        // Optional "verse(s)" / "стих*" / "v" keyword
-        s = s.replace(Regex("^(?:verses?|стих[аеиов]*|v)\\s+", RegexOption.IGNORE_CASE), "")
+        // Optional verse keyword (EN/DE/FR/ES/PT/UK/RO/PL + RU)
+        s = s.replace(
+            Regex("^(?:verses?|стих[аеиов]*|вірш[аеиів]*|verset|vers[íi]culo|versiculo|vers|wiersz[a-z]*|v)\\s+",
+                RegexOption.IGNORE_CASE), ""
+        )
         s = s.trimStart()
 
         if (s.isEmpty()) return ChapterVerse(chapter, null, null)
@@ -83,9 +89,9 @@ object ExplicitParser {
 
         if (s.isEmpty()) return ChapterVerse(chapter, verseStart, null)
 
-        // Optional range: "-N", "to N", "through N", "по N"
+        // Optional range: "-N" or keyword (EN/DE/FR/ES/PT/PL/UK + RU)
         val rangeMatch = Regex(
-            "^(?:[-–—]|\\s*(?:to|through|по)\\s+)(\\d+)",
+            "^(?:[-–—]|\\s*(?:to|through|по|bis|à|hasta|até|do|до)\\s+)(\\d+)",
             RegexOption.IGNORE_CASE
         ).find(s)
         if (rangeMatch != null) {

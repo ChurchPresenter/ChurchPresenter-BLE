@@ -119,4 +119,104 @@ class ExplicitParserTest {
         assertNotNull(r)
         assertEquals(66, r.bookNum)
     }
+
+    // ── Multilingual explicit-reference tests ─────────────────────────────────
+
+    @Test fun `German Johannes Kapitel Vers`() {
+        val r = ExplicitParser.parse("Johannes Kapitel 3 Vers 16")
+        assertNotNull(r)
+        assertEquals(43, r.bookNum)
+        assertEquals(3, r.chapter)
+        assertEquals(16, r.verseStart)
+    }
+
+    @Test fun `German Matthäus chapter colon`() {
+        val r = ExplicitParser.parse("Matthäus 5:3")
+        assertNotNull(r)
+        assertEquals(40, r.bookNum)
+        assertEquals(5, r.chapter)
+        assertEquals(3, r.verseStart)
+    }
+
+    @Test fun `German 1 Mose`() {
+        val r = ExplicitParser.parse("1. Mose 1:1")
+        assertNotNull(r)
+        assertEquals(1, r.bookNum)
+    }
+
+    @Test fun `German range bis`() {
+        val r = ExplicitParser.parse("Johannes 3:16 bis 18")
+        assertNotNull(r)
+        assertEquals(43, r.bookNum)
+        assertEquals(16, r.verseStart)
+        assertEquals(18, r.verseEnd)
+    }
+
+    @Test fun `French Jean chapitre verset`() {
+        val r = ExplicitParser.parse("Jean chapitre 3 verset 16")
+        assertNotNull(r)
+        assertEquals(43, r.bookNum)
+        assertEquals(3, r.chapter)
+        assertEquals(16, r.verseStart)
+    }
+
+    @Test fun `French Matthieu`() {
+        val r = ExplicitParser.parse("Matthieu 5:3")
+        assertNotNull(r)
+        assertEquals(40, r.bookNum)
+    }
+
+    @Test fun `Spanish Juan capítulo versículo`() {
+        val r = ExplicitParser.parse("Juan capítulo 3 versículo 16")
+        assertNotNull(r)
+        assertEquals(43, r.bookNum)
+        assertEquals(3, r.chapter)
+        assertEquals(16, r.verseStart)
+    }
+
+    @Test fun `Spanish Mateo`() {
+        val r = ExplicitParser.parse("Mateo 5:3")
+        assertNotNull(r)
+        assertEquals(40, r.bookNum)
+    }
+
+    @Test fun `Portuguese João`() {
+        val r = ExplicitParser.parse("João 3:16")
+        assertNotNull(r)
+        assertEquals(43, r.bookNum)
+        assertEquals(3, r.chapter)
+        assertEquals(16, r.verseStart)
+    }
+
+    @Test fun `Portuguese Mateus`() {
+        val r = ExplicitParser.parse("Mateus 5:3")
+        assertNotNull(r)
+        assertEquals(40, r.bookNum)
+    }
+
+    @Test fun `Romanian Ioan`() {
+        val r = ExplicitParser.parse("Ioan 3:16")
+        assertNotNull(r)
+        assertEquals(43, r.bookNum)
+    }
+
+    @Test fun `Ukrainian Івана`() {
+        val r = ExplicitParser.parse("Івана 3:16")
+        assertNotNull(r)
+        assertEquals(43, r.bookNum)
+        assertEquals(3, r.chapter)
+        assertEquals(16, r.verseStart)
+    }
+
+    @Test fun `Polish Jana`() {
+        val r = ExplicitParser.parse("Jana 3:16")
+        assertNotNull(r)
+        assertEquals(43, r.bookNum)
+    }
+
+    @Test fun `Polish Mateusza`() {
+        val r = ExplicitParser.parse("Mateusza 5:3")
+        assertNotNull(r)
+        assertEquals(40, r.bookNum)
+    }
 }
