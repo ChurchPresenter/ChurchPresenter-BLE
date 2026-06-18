@@ -570,9 +570,22 @@ object BookResolver {
         add(66, "objawienia", "obj")
     }
 
-    // Sorted longest-first for greedy matching
-    val ALIASES_BY_LENGTH: List<Pair<String, Int>> =
+    // Sorted longest-first for greedy matching; extended by register() at startup
+    private var _aliasesByLength: List<Pair<String, Int>> =
         ALIASES.entries.sortedByDescending { it.key.length }.map { it.key to it.value }
+
+    val ALIASES_BY_LENGTH: List<Pair<String, Int>> get() = _aliasesByLength
+
+    // Called once at startup with (bookNum, bookName) pairs from all loaded SPB files.
+    // Adds any name not already in the static alias table so every SPB language
+    // gets explicit-reference support for free.
+    fun register(spbBookNames: List<Pair<Int, String>>) {
+        val combined = ALIASES.toMutableMap()
+        for ((num, name) in spbBookNames) {
+            combined.putIfAbsent(name.lowercase().trim(), num)
+        }
+        _aliasesByLength = combined.entries.sortedByDescending { it.key.length }.map { it.key to it.value }
+    }
 
     fun canonicalName(bookNum: Int): String = CANONICAL_NAMES[bookNum] ?: "Book $bookNum"
 }

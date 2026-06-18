@@ -154,6 +154,34 @@ object SpbLoader {
         )
     }
 
+    // Fast header-only scan — reads each SPB file only until the "-----" separator.
+    // Returns (bookNum, bookName) pairs from every SPB file found, deduplicated.
+    fun scanAllBookManifests(): List<Pair<Int, String>> {
+        val root = File(Config.bibleRoot)
+        if (!root.exists()) return emptyList()
+        val seen = mutableSetOf<Pair<Int, String>>()
+        root.walk()
+            .filter { it.isFile && it.name.endsWith(".spb") }
+            .forEach { file ->
+                runCatching {
+                    file.useLines(Charsets.UTF_8) { lines ->
+                        for (line in lines) {
+                            if (line.trimEnd() == "-----") return@useLines
+                            if (line.startsWith("##") || line.startsWith(" ") ||
+                                line.startsWith("\t") || line.isBlank()) continue
+                            val parts = line.split("\t")
+                            if (parts.size >= 2) {
+                                val num = parts[0].trim().toIntOrNull() ?: continue
+                                val name = parts[1].trim()
+                                if (name.isNotBlank()) seen.add(num to name)
+                            }
+                        }
+                    }
+                }
+            }
+        return seen.toList()
+    }
+
     private fun extractLanguage(filename: String): String =
         filename.substringBefore("_").uppercase()
 }

@@ -1,6 +1,7 @@
 package engine
 
 import engine.bible.SpbLoader
+import engine.detection.BookResolver
 import engine.engine.DetectionEngine
 import engine.socket.Broadcaster
 import engine.socket.SttSocketClient
@@ -40,7 +41,11 @@ fun main(args: Array<String>) {
         return
     }
 
-    // 4. Load translations and build detection engine
+    // 4. Register book names from all SPB files for explicit-reference detection
+    //    (fast header-only scan — no verse data parsed here)
+    BookResolver.register(SpbLoader.scanAllBookManifests())
+
+    // 5. Load default translations and build detection engine
     println("Loading translations from ${Config.bibleRoot} ...")
     val translations = SpbLoader.loadDefaults()
     if (translations.isEmpty()) {
