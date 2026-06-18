@@ -39,6 +39,32 @@ object SpbLoader {
         return translations
     }
 
+    /**
+     * Loads only the named SPB files (by file name, e.g. ChurchPresenter's primary + secondary
+     * bibles), in the given order. Falls back to [loadAll] when the list is empty.
+     */
+    fun loadSelected(fileNames: List<String>): List<EngineTranslation> {
+        if (fileNames.isEmpty()) return loadAll()
+        val root = File(Config.bibleRoot)
+        if (!root.exists()) {
+            System.err.println("Bible root not found: ${Config.bibleRoot}")
+            return emptyList()
+        }
+        val byName = root.walk().filter { it.isFile && it.name.endsWith(".spb") }.associateBy { it.name }
+        val seenIds = mutableMapOf<String, Int>()
+        val translations = mutableListOf<EngineTranslation>()
+        for (name in fileNames.distinct()) {
+            val file = byName[name] ?: continue
+            try {
+                val t = parseFile(file, seenIds) ?: continue
+                if (t.byBCV.size >= 10) translations.add(t)
+            } catch (e: Exception) {
+                System.err.println("Warning: failed to parse ${file.name}: ${e.message}")
+            }
+        }
+        return translations
+    }
+
     fun loadDefaults(): List<EngineTranslation> {
         val root = File(Config.bibleRoot)
         if (!root.exists()) return emptyList()

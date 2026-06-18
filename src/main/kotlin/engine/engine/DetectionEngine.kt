@@ -35,9 +35,11 @@ data class ScriptureEvent(
 
 class DetectionEngine(private val translations: List<EngineTranslation>) {
 
-    // BM25 index only over defaults — indexing all 72 translations would exceed 1 GB RAM
-    private val indexTranslations = translations.filter { it.id in Config.defaultTranslations }
-        .ifEmpty { translations.take(2) }
+    // Index every loaded translation by default; an explicit Config.defaultTranslations allow-list
+    // can restrict it (e.g. to cap memory when many large translations are present).
+    private val indexTranslations =
+        if (Config.defaultTranslations.isEmpty()) translations
+        else translations.filter { it.id in Config.defaultTranslations }.ifEmpty { translations }
     private val index = BibleIndex(indexTranslations)
     private val stabilizer = Stabilizer()
     private val utterances = HashMap<String, UtteranceState>()

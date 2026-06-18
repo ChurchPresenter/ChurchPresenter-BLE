@@ -5,8 +5,9 @@ object Config {
     var sttServerUrl: String = ""
     var outputPort: Int = 8765
 
-    // Detection translations — BM25 index is built only over these
-    val defaultTranslations = listOf("ENG_KJV", "RUS_RST")
+    // Optional BM25 allow-list. Empty = index every SPB found in the bible folder (the default);
+    // set specific ids only to cap memory when many large translations are present.
+    val defaultTranslations = emptyList<String>()
 
     // Detection tuning (var ones are runtime-settable via the `set_tuning` WebSocket message)
     var reverseMinScoreRatio = 2.0

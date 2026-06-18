@@ -23,7 +23,7 @@ class EngineHandle internal constructor(private val stopFn: () -> Unit) {
  * engine in-process when STT connects and talks to it over the WebSocket.
  */
 object EngineServer {
-    fun start(sttUrl: String, bibleRoot: String, port: Int): EngineHandle? {
+    fun start(sttUrl: String, bibleRoot: String, port: Int, bibleFiles: List<String> = emptyList()): EngineHandle? {
         if (bibleRoot.isBlank()) {
             System.err.println("bible-engine: bible root not configured")
             return null
@@ -32,8 +32,10 @@ object EngineServer {
         Config.sttServerUrl = sttUrl
         Config.outputPort = port
 
+        // Book names are registered from every SPB (cheap header scan), but full verse data + BM25
+        // index are built only for the requested bibles (ChurchPresenter's primary + secondary).
         BookResolver.register(SpbLoader.scanAllBookManifests())
-        val translations = SpbLoader.loadDefaults()
+        val translations = SpbLoader.loadSelected(bibleFiles)
         if (translations.isEmpty()) {
             System.err.println("bible-engine: no translations loaded from $bibleRoot")
             return null
