@@ -1,4 +1,4 @@
-# bible-engine
+# bible-engine — BLE (Bible Lookup Engine)
 
 A standalone Kotlin/JVM microservice that listens to live speech-to-text streams and detects Bible references in real time. It serves scripture events over WebSocket to any connected client (e.g. ChurchPresenter).
 
