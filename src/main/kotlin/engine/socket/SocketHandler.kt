@@ -1,5 +1,6 @@
 package engine.socket
 
+import engine.Config
 import engine.engine.DetectionEngine
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
@@ -34,6 +35,10 @@ fun Route.bibleEngineSocket(engine: DetectionEngine, broadcaster: Broadcaster) {
 
                 when (type) {
                     "ping" -> send(Frame.Text("""{"type":"pong"}"""))
+                    "set_tuning" -> {
+                        val level = obj["level"]?.jsonPrimitive?.contentOrNull
+                        if (level != null) Config.applyLevel(level)
+                    }
                     "transcription_update" -> {
                         if (id.isBlank()) continue
                         engine.processTranscription(id, text).forEach { broadcaster.broadcast(it) }

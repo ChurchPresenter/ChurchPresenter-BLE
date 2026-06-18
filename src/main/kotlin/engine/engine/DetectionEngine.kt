@@ -78,8 +78,8 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
             }
         }
 
-        // 2. Reverse BM25 lookup
-        val reverse = ReverseLookup.search(combined, index, translations)
+        // 2. Reverse BM25 lookup (gated by the client-selected level)
+        val reverse = if (Config.reverseEnabled) ReverseLookup.search(combined, index, translations) else null
         if (reverse != null) {
             val t = translations.find { it.id == reverse.translationId } ?: return emptyList()
             val verse = t.lookupVerse(reverse.bookNum, reverse.chapter, reverse.verse)

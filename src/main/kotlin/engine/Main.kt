@@ -1,16 +1,6 @@
 package engine
 
-import engine.bible.SpbLoader
-import engine.detection.BookResolver
-import engine.engine.DetectionEngine
-import engine.socket.Broadcaster
-import engine.socket.SttSocketClient
-import engine.socket.bibleEngineSocket
-import io.ktor.server.application.*
-import io.ktor.server.engine.*
-import io.ktor.server.netty.*
-import io.ktor.server.routing.*
-import io.ktor.server.websocket.*
+import java.util.concurrent.CountDownLatch
 
 fun main(args: Array<String>) {
     // 1. Load config file (creates default on first run)
@@ -32,58 +22,19 @@ fun main(args: Array<String>) {
     if (Config.bibleRoot.isBlank()) {
         Config.bibleRoot = AppConfig.discoverBibleRoot() ?: ""
     }
-    if (Config.bibleRoot.isBlank()) {
+
+    // 4. Start the engine (non-blocking), then block until process exit.
+    val handle = EngineServer.start(Config.sttServerUrl, Config.bibleRoot, Config.outputPort)
+    if (handle == null) {
         System.err.println(
-            "ERROR: Bible root not configured.\n" +
-            "  Set 'bible.root' in ${configFile.absolutePath}\n" +
-            "  or pass --bible-root <path>"
+            "  Set 'bible.root' in ${configFile.absolutePath} or pass --bible-root <path>"
         )
         return
     }
-
-    // 4. Register book names from all SPB files for explicit-reference detection
-    //    (fast header-only scan — no verse data parsed here)
-    BookResolver.register(SpbLoader.scanAllBookManifests())
-
-    // 5. Load default translations and build detection engine
-    println("Loading translations from ${Config.bibleRoot} ...")
-    val translations = SpbLoader.loadDefaults()
-    if (translations.isEmpty()) {
-        System.err.println("No translations loaded — check bible.root path and that .spb files exist there.")
-        return
-    }
-    println("Loaded: ${translations.joinToString(", ") { it.id }}")
-
-    println("Building BM25 index ...")
-    val detectionEngine = DetectionEngine(translations)
-
-    // 5. Create broadcaster (shared between WebSocket output and Socket.IO input)
-    val broadcaster = Broadcaster()
-
-    // 6. Start Socket.IO client if STT server URL is configured
-    var sttClient: SttSocketClient? = null
-    if (Config.sttServerUrl.isNotBlank()) {
-        println("Connecting to STT server: ${Config.sttServerUrl}")
-        sttClient = SttSocketClient(Config.sttServerUrl, detectionEngine, broadcaster)
-        sttClient.connect()
-    } else {
+    if (Config.sttServerUrl.isBlank()) {
         println("No stt.server.url set — using WebSocket input mode.")
-        println("Send transcription_update messages to ws://localhost:${Config.outputPort}/bible-engine")
     }
-
-    println("Starting WebSocket output on ws://localhost:${Config.outputPort}/bible-engine\n")
-
-    embeddedServer(Netty, port = Config.outputPort) {
-        install(WebSockets) {
-            pingPeriodMillis = 30_000
-            timeoutMillis = 60_000
-            maxFrameSize = Long.MAX_VALUE
-            masking = false
-        }
-        routing {
-            bibleEngineSocket(detectionEngine, broadcaster)
-        }
-    }.start(wait = true)
-
-    sttClient?.disconnect()
+    println("bible-engine running on ws://localhost:${Config.outputPort}/bible-engine")
+    Runtime.getRuntime().addShutdownHook(Thread { handle.stop() })
+    CountDownLatch(1).await()
 }
