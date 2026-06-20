@@ -122,5 +122,20 @@ class BibleIndex(private val translations: List<EngineTranslation>) {
         text.lowercase()
             .replace(Regex("[^a-z0-9\\u0400-\\u04FF]"), " ")
             .split(Regex("\\s+"))
-            .filter { it.length >= 2 }
+            .filter { it.length >= 2 && it !in STOPWORDS }
+
+    companion object {
+        // Very common function words removed at BOTH index and query time (symmetric). Kept
+        // conservative — only grammatical words, no content words — so the all-terms reverse path
+        // isn't forced to match "и"/"the"/"что" inside a verse, and BM25 length-norm isn't skewed.
+        private val STOPWORDS: Set<String> = (
+            // English
+            "the a an and or of to in on at for with that this is are was were be by it as he she " +
+            "we they you his her their our my me him them us so but not from which who whom unto " +
+            "thy thee ye shall will have has had do did " +
+            // Russian
+            "не но на во об со ко из по за от же бы ли что как это этот так там тут вот для то он " +
+            "она они оно мы вы ты его её их наш ваш мой твой быть был была было были чтобы если"
+        ).split(" ").filter { it.isNotBlank() }.toHashSet()
+    }
 }

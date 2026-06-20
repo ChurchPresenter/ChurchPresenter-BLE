@@ -29,20 +29,29 @@ object ReverseLookup {
         // First try: only verses that contain ALL query tokens (precise match)
         val fullResults = index.searchAllTerms(window, topK)
 
-        val candidates: List<BibleIndex.SearchResult>
+        val rawCandidates: List<BibleIndex.SearchResult>
         val threshold: Double
 
         if (fullResults.size >= 1) {
-            candidates = fullResults
+            rawCandidates = fullResults
             // All candidates have every query term — trust BM25 ranking, no ratio gate
             threshold = 0.0
         } else {
             // Fallback: partial match with strict ratio to avoid false positives
             val allResults = index.search(window, topK)
             if (allResults.size < 2) return null
-            candidates = allResults
+            rawCandidates = allResults
             threshold = Config.reverseMinScoreRatio
         }
+
+        // Collapse the same verse appearing in multiple translations to a single entry (keeping the
+        // best score). Otherwise the top-1/top-2 ratio gate sees two copies of the SAME verse scoring
+        // near-identically (ratio ~1.0) and wrongly suppresses a correct detection.
+        val candidates = rawCandidates
+            .groupBy { Triple(it.verse.bookNum, it.verse.chapter, it.verse.verse) }
+            .map { (_, group) -> group.maxByOrNull { it.score }!! }
+            .sortedByDescending { it.score }
+        if (candidates.isEmpty()) return null
 
         val top = candidates[0]
         val ratio = if (candidates.size >= 2 && candidates[1].score > 0) {

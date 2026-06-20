@@ -576,6 +576,36 @@ object BookResolver {
 
     val ALIASES_BY_LENGTH: List<Pair<String, Int>> get() = _aliasesByLength
 
+    // ── Inflection-tolerant single-token resolution ─────────────────────────────
+    // Russian heavily inflects book names (Матфей→Матфея, Даниил→Даниила, Лука→Луки), so exact
+    // alias lookup misses spoken forms. Build a stem index from single-word aliases and match by
+    // prefix. Min stem length 4 keeps it from firing on 2–3 letter look-alikes.
+    private const val MIN_STEM = 4
+    private val RU_TRIM = "йьяиаеоуюёы".toSet()
+
+    private fun stemOf(s: String): String {
+        var x = s
+        while (x.length > MIN_STEM && x.last() in RU_TRIM) x = x.dropLast(1)
+        return x
+    }
+
+    private var _stemIndex: List<Pair<String, Int>> = buildStemIndex(ALIASES)
+
+    private fun buildStemIndex(aliases: Map<String, Int>): List<Pair<String, Int>> =
+        aliases.entries
+            .filter { !it.key.contains(' ') && it.key.length >= MIN_STEM && it.key.any { c -> c in 'а'..'я' } }
+            .map { stemOf(it.key) to it.value }
+            .filter { it.first.length >= MIN_STEM }
+            // If two book stems collide, drop both (ambiguous) to avoid a wrong guess.
+            .groupBy { it.first }
+            .filter { (_, v) -> v.map { it.second }.distinct().size == 1 }
+            .map { (stem, v) -> stem to v.first().second }
+            .sortedByDescending { it.first.length }
+
+    /** Resolves a single token to a book number by inflection-tolerant stem prefix, or null. */
+    fun resolveStem(token: String): Int? =
+        _stemIndex.firstOrNull { token.length >= it.first.length && token.startsWith(it.first) }?.second
+
     // Called once at startup with (bookNum, bookName) pairs from all loaded SPB files.
     // Adds any name not already in the static alias table so every SPB language
     // gets explicit-reference support for free.
@@ -585,6 +615,7 @@ object BookResolver {
             combined.putIfAbsent(name.lowercase().trim(), num)
         }
         _aliasesByLength = combined.entries.sortedByDescending { it.key.length }.map { it.key to it.value }
+        _stemIndex = buildStemIndex(combined)
     }
 
     fun canonicalName(bookNum: Int): String = CANONICAL_NAMES[bookNum] ?: "Book $bookNum"

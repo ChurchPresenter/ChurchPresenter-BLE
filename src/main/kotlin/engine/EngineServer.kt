@@ -3,6 +3,7 @@ package engine
 import engine.bible.SpbLoader
 import engine.detection.BookResolver
 import engine.engine.DetectionEngine
+import engine.engine.DetectionLogger
 import engine.socket.Broadcaster
 import engine.socket.SttSocketClient
 import engine.socket.bibleEngineSocket
@@ -11,6 +12,7 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
+import java.io.File
 
 /** Handle to a running engine instance; call [stop] to shut it (and its STT client) down. */
 class EngineHandle internal constructor(private val stopFn: () -> Unit) {
@@ -41,6 +43,9 @@ object EngineServer {
             return null
         }
         val detectionEngine = DetectionEngine(translations)
+        // Grow a labeled corpus for free: every emitted detection + its triggering text is appended
+        // here, so each live service becomes regression data without manual annotation.
+        DetectionLogger.path = File(bibleRoot, "detection-log.jsonl").absolutePath
         val broadcaster = Broadcaster()
 
         val sttClient: SttSocketClient? =

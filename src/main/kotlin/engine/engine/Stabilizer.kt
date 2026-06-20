@@ -2,10 +2,9 @@ package engine.engine
 
 import engine.Config
 
-class Stabilizer {
+class Stabilizer(private val clock: () -> Long = System::currentTimeMillis) {
 
-    private val window = ArrayDeque<String>(Config.dedupWindow + 1)
-    private val windowSet = LinkedHashSet<String>(Config.dedupWindow * 2)
+    private val lastEmittedAt = HashMap<String, Long>()
     private val lastConfidence = HashMap<String, Double>()
 
     sealed class EmitDecision {
@@ -17,33 +16,38 @@ class Stabilizer {
     fun evaluate(key: String, confidence: Double): EmitDecision {
         if (confidence < Config.minConfidenceEmit) return EmitDecision.Suppress
 
-        return if (key !in windowSet) {
-            addToWindow(key)
+        val now = clock()
+        val seenAt = lastEmittedAt[key]
+        // Time-based dedup: a reference re-emits only after it has gone quiet for dedupTtlMs, so the
+        // speaker returning to a passage later re-fires (the old fixed 32-key window never did).
+        if (seenAt == null || now - seenAt > Config.dedupTtlMs) {
+            lastEmittedAt[key] = now
             lastConfidence[key] = confidence
-            EmitDecision.NewDetection(key)
+            pruneExpired(now)
+            return EmitDecision.NewDetection(key)
+        }
+        lastEmittedAt[key] = now
+        val prev = lastConfidence[key] ?: 0.0
+        return if (kotlin.math.abs(confidence - prev) >= 0.05) {
+            lastConfidence[key] = confidence
+            EmitDecision.UpdatedDetection(key, prev)
         } else {
-            val prev = lastConfidence[key] ?: 0.0
-            if (kotlin.math.abs(confidence - prev) >= 0.05) {
-                lastConfidence[key] = confidence
-                EmitDecision.UpdatedDetection(key, prev)
-            } else {
-                EmitDecision.Suppress
-            }
+            EmitDecision.Suppress
         }
     }
 
-    private fun addToWindow(key: String) {
-        if (windowSet.size >= Config.dedupWindow) {
-            val oldest = window.removeFirst()
-            windowSet.remove(oldest)
+    private fun pruneExpired(now: Long) {
+        if (lastEmittedAt.size < 256) return
+        val cutoff = now - Config.dedupTtlMs
+        val it = lastEmittedAt.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (e.value < cutoff) { lastConfidence.remove(e.key); it.remove() }
         }
-        window.addLast(key)
-        windowSet.add(key)
     }
 
     fun reset() {
-        window.clear()
-        windowSet.clear()
+        lastEmittedAt.clear()
         lastConfidence.clear()
     }
 }

@@ -30,16 +30,19 @@ class SttSocketClient(
             System.err.println("STT server connection error: ${args.firstOrNull()}")
         }
 
+        // Both streams feed ONE utterance ("live") so the detector sees the transcript AND its
+        // translation together (cross-language corroboration + shared sticky context). Using two ids
+        // here previously split them into independent states that never combined.
         socket.on("transcription_update") { args ->
             extractTranscriptText(args)?.let { text ->
-                val events = detectionEngine.processTranscription("live-transcript", text)
+                val events = detectionEngine.processTranscription("live", text)
                 runBlocking { for (e in events) broadcaster.broadcast(e) }
             }
         }
 
         socket.on("translation_update") { args ->
             extractTranslationText(args)?.let { text ->
-                val events = detectionEngine.processTranslation("live-translation", text)
+                val events = detectionEngine.processTranslation("live", text)
                 runBlocking { for (e in events) broadcaster.broadcast(e) }
             }
         }

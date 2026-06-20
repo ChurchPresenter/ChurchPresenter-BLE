@@ -66,6 +66,10 @@ object SpbLoader {
     }
 
     fun loadDefaults(): List<EngineTranslation> {
+        // Empty allow-list means "load everything available" (matches DetectionEngine's index
+        // semantics); otherwise loadDefaults would return nothing and the engine would have no data.
+        if (Config.defaultTranslations.isEmpty()) return loadAll()
+
         val root = File(Config.bibleRoot)
         if (!root.exists()) return emptyList()
 

@@ -5,7 +5,7 @@ import engine.bible.BibleIndex
 import engine.bible.EngineTranslation
 import engine.bible.EngineVerse
 import engine.detection.ContinuationEngine
-import engine.detection.ExplicitParser
+import engine.detection.ReferenceWatcher
 import engine.detection.ReverseLookup
 import kotlinx.serialization.Serializable
 
@@ -60,51 +60,43 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
 
     private fun runDetection(state: UtteranceState): List<ScriptureEvent> {
         val combined = "${state.transcript} ${state.translation}".trim()
+        val now = System.currentTimeMillis()
 
-        // 1. Explicit reference
-        val explicit = ExplicitParser.parse(combined)
-        if (explicit != null) {
-            val t = pickTranslation(state.transcript)
-            val event = buildExplicitEvent(state.id, explicit, t) ?: return emptyList()
-            val key = refKey(event)
-            return when (stabilizer.evaluate(key, event.confidence)) {
-                is Stabilizer.EmitDecision.NewDetection -> {
-                    recordDetection(state, event)
-                    listOf(event)
+        // 1. Explicit / sticky references (stateful watcher). May yield several per utterance.
+        val refs = ReferenceWatcher.process(combined, state, now)
+        if (refs.isNotEmpty()) {
+            val emitted = ArrayList<ScriptureEvent>()
+            for (ref in refs) {
+                val event = buildRefEvent(state, ref) ?: continue
+                stabilizer.evaluate(refKey(event), event.confidence).toEvent(event)?.let {
+                    recordDetection(state, it)
+                    emitted.add(it)
                 }
-                is Stabilizer.EmitDecision.UpdatedDetection -> {
-                    recordDetection(state, event)
-                    listOf(event.copy(type = "scripture.updated"))
-                }
-                Stabilizer.EmitDecision.Suppress -> emptyList()
             }
+            if (emitted.isNotEmpty()) return logged(state, emitted)
         }
 
-        // 2. Reverse BM25 lookup (gated by the client-selected level)
+        // 2. Reverse BM25 lookup (gated by the client-selected level), validated against what was
+        //    actually spoken so a spurious BM25 hit on a single rare word can't fire.
         val reverse = if (Config.reverseEnabled) ReverseLookup.search(combined, index, translations) else null
         if (reverse != null) {
             val t = translations.find { it.id == reverse.translationId } ?: return emptyList()
             val verse = t.lookupVerse(reverse.bookNum, reverse.chapter, reverse.verse)
                 ?: return emptyList()
-            val event = buildEvent(
-                id = state.id,
-                verse = verse,
-                translation = t,
-                confidence = reverse.confidence,
-                matchType = "reverse",
-                verseEnd = null,
-            )
-            val key = refKey(event)
-            return when (stabilizer.evaluate(key, event.confidence)) {
-                is Stabilizer.EmitDecision.NewDetection -> {
-                    recordDetection(state, event)
-                    listOf(event)
+            val agreement = AgreementScorer.score(verse.text, state.transcript, state.translation)
+            if (agreement >= Config.reverseMinAgreement) {
+                val event = buildEvent(
+                    id = state.id,
+                    verse = verse,
+                    translation = t,
+                    confidence = reverse.confidence,
+                    matchType = "reverse",
+                    verseEnd = null,
+                )
+                stabilizer.evaluate(refKey(event), event.confidence).toEvent(event)?.let {
+                    recordDetection(state, it)
+                    return logged(state, listOf(it))
                 }
-                is Stabilizer.EmitDecision.UpdatedDetection -> {
-                    recordDetection(state, event)
-                    listOf(event.copy(type = "scripture.updated"))
-                }
-                Stabilizer.EmitDecision.Suppress -> emptyList()
             }
         }
 
@@ -119,39 +111,57 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
                 matchType = "continuation",
                 verseEnd = null,
             ).copy(type = "scripture.continuation")
-            val key = refKey(event)
-            return when (stabilizer.evaluate(key, event.confidence)) {
-                is Stabilizer.EmitDecision.Suppress -> emptyList()
-                else -> {
-                    recordDetection(state, event)
-                    listOf(event)
-                }
+            if (stabilizer.evaluate(refKey(event), event.confidence) != Stabilizer.EmitDecision.Suppress) {
+                recordDetection(state, event)
+                return logged(state, listOf(event))
             }
         }
 
         return emptyList()
     }
 
-    private fun buildExplicitEvent(
-        id: String,
-        ref: ExplicitParser.ParsedReference,
-        t: EngineTranslation,
-    ): ScriptureEvent? {
+    /** Maps a stabilizer decision to the event to emit (with the right type), or null to suppress. */
+    private fun Stabilizer.EmitDecision.toEvent(event: ScriptureEvent): ScriptureEvent? = when (this) {
+        is Stabilizer.EmitDecision.NewDetection -> event
+        is Stabilizer.EmitDecision.UpdatedDetection -> event.copy(type = "scripture.updated")
+        Stabilizer.EmitDecision.Suppress -> null
+    }
+
+    private fun logged(state: UtteranceState, events: List<ScriptureEvent>): List<ScriptureEvent> {
+        for (e in events) DetectionLogger.log(state.transcript, state.translation, e)
+        return events
+    }
+
+    private fun buildRefEvent(state: UtteranceState, ref: ReferenceWatcher.Ref): ScriptureEvent? {
+        val t = pickTranslation(state.transcript)
         val verseStart = ref.verseStart ?: 1
         val verse = t.lookupVerse(ref.bookNum, ref.chapter, verseStart)
             ?.takeIf { !it.isHeader }
             ?: t.firstContentVerse(ref.bookNum, ref.chapter)
             ?: return null
         val verseEnd = ref.verseEnd?.takeIf { it > verse.verse }
-        val endCode = verseEnd?.let {
-            t.lookupVerse(ref.bookNum, ref.chapter, it)?.code
-        }
+        val endCode = verseEnd?.let { t.lookupVerse(ref.bookNum, ref.chapter, it)?.code }
         val bookName = t.bookName(ref.bookNum)
         val displayRef = if (verseEnd != null) "$bookName ${ref.chapter}:${verse.verse}-$verseEnd"
-        else "$bookName ${ref.chapter}:${verse.verse}"
+        else if (ref.verseStart != null) "$bookName ${ref.chapter}:${verse.verse}"
+        else "$bookName ${ref.chapter}"
+
+        // Tier 3 (sticky, no book spoken) is corroborated by the spoken verse content; tiers 1/2
+        // are explicit citations and trusted outright.
+        val confidence = when (ref.tier) {
+            1 -> 0.95
+            2 -> 0.90
+            else -> {
+                val agree = AgreementScorer.score(verse.text, state.transcript, state.translation)
+                (0.60 + (agree * 0.30)).coerceIn(0.60, 0.88)
+            }
+        }
+        val matchType = if (ref.tier == 3) "continuation" else "explicit"
+        val type = if (ref.tier == 3) "scripture.continuation" else "scripture.detected"
+
         return ScriptureEvent(
-            type = "scripture.detected",
-            id = id,
+            type = type,
+            id = state.id,
             reference = ScriptureReference(
                 bookId = ref.bookNum,
                 bookName = bookName,
@@ -164,8 +174,8 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
                 numbering = t.numbering,
             ),
             verseText = verse.text,
-            confidence = 0.95,
-            matchType = "explicit",
+            confidence = confidence,
+            matchType = matchType,
             translation = t.abbreviation,
         )
     }
