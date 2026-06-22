@@ -28,6 +28,9 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion")
+    // Replay harness only: read archived service .db backups in DbReplayTest. The .db files are
+    // never committed; the test skips gracefully when -Dreplay.db is unset (see DbReplayTest).
+    testImplementation("org.xerial:sqlite-jdbc:3.45.3.0")
 }
 
 application {
@@ -43,6 +46,10 @@ java {
 tasks.test {
     useJUnitPlatform()
     systemProperty("bible.root", "${projectDir}/Bibles")
+    // Forward the optional .db replay path + fixture id to the forked test JVM (DbReplayTest skips
+    // if unset).
+    System.getProperty("replay.db")?.let { systemProperty("replay.db", it) }
+    System.getProperty("replay.fixture")?.let { systemProperty("replay.fixture", it) }
 }
 
 tasks.jar {

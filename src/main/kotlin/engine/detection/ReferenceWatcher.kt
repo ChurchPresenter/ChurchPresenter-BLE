@@ -33,15 +33,29 @@ object ReferenceWatcher {
         val tier: Int,          // 1 FULL, 2 PARTIAL, 3 STICKY
     )
 
+    // Non-Russian chapter/verse keyword stems use plain prefix matching (low FP risk, no data to
+    // refine). The Russian глав-/стих- stems are handled separately below with inflection-aware
+    // endings so look-alikes (главное, стихотворение) don't fire as keywords.
     private val CHAP_KW = listOf(
-        "глав", "kapitel", "kapit", "chapter", "chapitre", "capitul", "capitol", "розділ", "rozdzia",
+        "kapitel", "kapit", "chapter", "chapitre", "capitul", "capitol", "розділ", "rozdzia",
     )
     private val VERSE_KW = listOf(
-        "стих", "вірш", "versicul", "versiculo", "verset", "verse", "vers", "wiersz",
+        "вірш", "versicul", "versiculo", "verset", "verse", "vers", "wiersz",
     )
+    // Valid grammatical endings after the Russian stems "глав"/"стих". The whole suffix must match
+    // (not just its first char) — that is what separates глава/главы/глав from главное/главный and
+    // стих/стиха/стихи/стихом from стихотворение.
+    private val CHAP_RU_ENDINGS = setOf("", "а", "ы", "е", "у", "ой", "ою", "ам", "ах", "ами")
+    private val VERSE_RU_ENDINGS = setOf("", "а", "е", "у", "и", "ов", "ом", "ах", "ами")
     private val RANGE_WORDS = setOf("по", "до", "через", "bis", "to", "through", "hasta", "até", "ate")
     private val LIST_WORDS = setOf("и", "или", "потом", "затем", "then", "and")
     private val FROM_WORDS = setOf("с", "со", "from", "desde")
+    // Bare cardinal "one" (count) — distinct from the ordinal (первый/first) and the digit "1". As
+    // a chapter/verse number a real reference uses the ordinal or the digit, so "один стих" / "one
+    // verse" means "one verse" (a quantity), never "verse one". Treated as filler so it can't bind
+    // to a sticky context. Both RU and EN forms are listed because the translation track is fed
+    // through the same watcher (DetectionEngine combines transcript + translation).
+    private val BARE_ONE = setOf("один", "одна", "одно", "одни", "одну", "one")
 
     private sealed interface Atom {
         data class Book(val num: Int) : Atom
@@ -55,8 +69,21 @@ object ReferenceWatcher {
         object Filler : Atom
     }
 
-    /** Parse [text]; emit references found and update the carried sticky context. */
-    fun process(text: String, sticky: Sticky, now: Long = System.currentTimeMillis()): List<Ref> {
+    /**
+     * Parse [text]; emit references found and update the carried sticky context.
+     *
+     * [isMusic] flags a segment the STT engine labelled as music. Sung lyrics quote scripture as
+     * lyrics, not as references being looked up — so when [isMusic] (and [Config.suppressDuringMusic])
+     * we skip detection entirely and leave the sticky context untouched, so a song can't seed or
+     * hijack it. Every false positive in the real corpus came from sung/recited non-reference text.
+     */
+    fun process(
+        text: String,
+        sticky: Sticky,
+        now: Long = System.currentTimeMillis(),
+        isMusic: Boolean = false,
+    ): List<Ref> {
+        if (isMusic && Config.suppressDuringMusic) return emptyList()
         if (sticky.watchExpiresAt != 0L && now > sticky.watchExpiresAt) {
             sticky.watchBook = null
             sticky.watchChapter = null
@@ -71,6 +98,8 @@ object ReferenceWatcher {
 
     private fun tokenize(text: String): List<String> {
         var s = text.lowercase().replace('–', '-').replace('—', '-')
+        // Gated STT spelling normalization: fold Cyrillic э→е so "эфесянам"→"ефесянам" resolves.
+        if (Config.normalizeStt) s = s.replace('э', 'е')
         // strip digit-ordinal suffixes ("3-я" -> "3", "21-й" -> "21", "19-го" -> "19", "2nd" -> "2").
         // Use a Unicode-safe lookahead, not \b — Java's \b is ASCII-only and won't fire after Cyrillic.
         s = Regex("(\\d{1,3})-(?:я|й|е|го|му|м|ой|ом|ая|ое|ый|ий|ст|нд|рд|th|nd|st|rd)(?![\\p{L}])")
@@ -95,7 +124,11 @@ object ReferenceWatcher {
             for (len in maxJoin downTo 1) {
                 val phrase = tokens.subList(i, i + len).joinToString(" ")
                 val bookNum = BookResolver.ALIASES[phrase]
-                if (bookNum != null) {
+                // Skip ultra-short single-token aliases (≤2 chars: "so"→Zeph, "re"/"ap"→Rev, "ge",
+                // "ex"…). They are typed-input abbreviations and fire constantly on spoken/translated
+                // prose (the translation track flows through here too), hijacking the sticky book.
+                // Multi-word aliases always carry a space (length ≥ 3) and are kept.
+                if (bookNum != null && (len > 1 || phrase.length >= 3)) {
                     atoms.add(Atom.Book(bookNum))
                     i += len
                     matched = true
@@ -125,6 +158,7 @@ object ReferenceWatcher {
                     tok in RANGE_WORDS -> Atom.Range
                     tok in LIST_WORDS -> Atom.ListSep
                     tok in FROM_WORDS -> Atom.From
+                    tok in BARE_ONE -> Atom.Filler
                     else -> NumberWords.parseToken(tok)?.let { Atom.Num(it) } ?: Atom.Filler
                 }
             )
@@ -133,8 +167,10 @@ object ReferenceWatcher {
         return atoms
     }
 
-    private fun isChapKw(t: String) = CHAP_KW.any { t.startsWith(it) }
-    private fun isVerseKw(t: String) = VERSE_KW.any { t.startsWith(it) }
+    private fun isChapKw(t: String): Boolean =
+        (t.startsWith("глав") && t.substring(4) in CHAP_RU_ENDINGS) || CHAP_KW.any { t.startsWith(it) }
+    private fun isVerseKw(t: String): Boolean =
+        (t.startsWith("стих") && t.substring(4) in VERSE_RU_ENDINGS) || VERSE_KW.any { t.startsWith(it) }
 
     // ── interpretation ──────────────────────────────────────────────────────────
 
@@ -181,7 +217,16 @@ object ReferenceWatcher {
 
         for (a in atoms) {
             when (a) {
-                is Atom.Book -> { flush(); curBook = a.num }
+                is Atom.Book -> {
+                    // Normally a book starts a fresh reference (flush whatever preceded it). When
+                    // inferBookAtEnd is on and no book has been named yet in this segment but
+                    // chapter/verse numbers already have, the book was spoken *after* its numbers
+                    // ("14 стих 3 главы … Матфея") — attach it to them instead of flushing.
+                    val attachToPending = Config.inferBookAtEnd && curBook == null &&
+                        (chapter != null || verseStart != null || recent.isNotEmpty())
+                    if (attachToPending) curBook = a.num
+                    else { flush(); curBook = a.num }
+                }
                 is Atom.ChapKw -> { assignChapterFromRecent(); keywordSeen = true }
                 is Atom.VerseKw -> { assignVersesFromRecent(); keywordSeen = true }
                 is Atom.Colon -> { assignChapterFromRecent() }

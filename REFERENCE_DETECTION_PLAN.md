@@ -5,8 +5,8 @@ stateful detector design, how it stays robust across speaking/transcription styl
 validation strategy, and the work still outstanding. Driven by real STT data (archived service
 `.db` files). **Primary language is Russian** (see project memory).
 
-Status: **CORE IMPLEMENTED** (70 unit tests green). Data-dependent tuning + a few items remain —
-see §6. More `.db` backups to come.
+Status: **CORE IMPLEMENTED** (unit tests green + a skip-when-absent `.db` replay). Data-dependent
+tuning + a few items remain — see §6. Two archived backups folded in (§5/§7).
 
 ### Implemented so far (commit this branch)
 New files:
@@ -160,6 +160,23 @@ chip; optionally auto-estimate.
    from them): Matthew 28:18, 1 Peter 3:21, Romans 10:9-10, Proverbs 30:5, Ephesians 4:5,
    Mark 16:15-16, the **Daniel 6 verse-by-verse chain**, etc. Feed each row in order, assert
    emitted refs.
+   - **Folded in (two archived services).** Two more backups added as permanent coverage —
+     replayed by `DbReplayTest` (sqlite-jdbc, skips when `-Dreplay.db` unset) and locked as
+     hardcoded sequences in `ReferenceWatcherTest`. Curated expected table in §7. The replay feeds
+     the **combined transcript + translation** per row (mirroring `DetectionEngine.runDetection`),
+     so the translation track corroborates/rescues a book whose source was STT-garbled (the Joshua
+     read: the source-language book token never matches, the translation's "…Joshua…" does). It uses
+     each row's **real `timestamp`** so sticky TTL expires/holds books as it does live. With those
+     plus the short-alias guard (below) every curated row resolves **exactly**, including the Joshua
+     read (#633/#661) and the split Matthew 7:21 (#410). The lone drop is #660 (chapter-only read
+     whose translation appends a spurious verse) — a genuine translation garble, covered cleanly on
+     the source-language path in the unit tests.
+     New true-positive patterns: word-ordinal chapter (`шестая глава`), `с N по M` verse range,
+     split book→chapter→verse with instrumental `стихом`, verse-before-chapter order
+     (`14 стих 3 главы`), `Четвертая глава` → `С N стиха` sticky.
+     New precision traps now guarded: `стихотворение`/`стихотворения` (poem),
+     `главное`/`главный`, `глава семьи` (`семьи` collided with стем for 7), bare `стихи`,
+     bare `один стих`/`этот стих`.
 2. **Synthetic stress corpus** for styles the files lack — assert **precision stays high**
    (precision is what must generalize): rapid-fire book→book→bare-verse chains;
    single-passage sermons; split-across-rows with filler; STT-corrupted book names (inject
@@ -167,12 +184,36 @@ chip; optionally auto-estimate.
 3. **Grow the real corpus for free** — services already archive to `.db`. Add a column
    logging what the engine detected per row; every service becomes labeled-ish regression
    data. Periodically review misses. (More backups incoming — fold them in here.)
+   → Two data improvements are tracked as separate handoff specs (kept out of the repo, passed to the
+   respective developers): (a) **transcription-side** signals — reliable `speech_type`, millisecond
+   timestamps, per-word confidence, partials, language tags; (b) **ChurchPresenter-side** labels —
+   what went on screen vs. what the detector emitted, plus opt-in log collection. Note:
+   `engine/DetectionLogger.kt` already logs the detector half to `detection-log.jsonl`; the missing
+   piece is the go-live ground truth + a collection path.
 
 ### Test harness notes
-- Read `.db` via SQLite; order by `id`; replay `text` (and `translated_text`) as the stream.
-- Mirror existing tests `src/test/kotlin/engine/{ExplicitParserTest,ReverseLookupTest}.kt`.
+- `DbReplayTest` (built) reads `.db` via sqlite-jdbc, orders by `id`, feeds **`text + " " +
+  translated_text`** per row (mirrors `DetectionEngine.runDetection`) through one sticky context,
+  using each row's real **`timestamp`** as `now` so sticky TTL behaves as live.
 - Windows console can't print Cyrillic (cp1252) — write expected/actual to UTF-8 files or
-  assert programmatically; set `PYTHONUTF8=1` for any Python tooling.
+  assert programmatically; set `PYTHONUTF8=1` for any Python tooling. (Use Python `sqlite3` to dump
+  rows to a UTF-8 JSON file, then Read that — `sqlite3` CLI is not installed.)
+
+### How to fold in the next backup (recipe)
+1. Keep the `.db` local only (never commit it); assign it a neutral fixture id (`service3`, …) — do
+   not record its filename/path in the repo.
+2. Dump candidate rows to UTF-8 (`PYTHONUTF8=1 python … json.dump(…, ensure_ascii=False)`), Read the
+   JSON, and pick the reference-bearing rows + new false-positive traps. For sticky/translation-rescue
+   rows, also pull the `translated_text` and the neighbouring rows (sticky book comes from context).
+3. Add **`exactByFixture[id]`** entries (book+ch+verse[+range]) and **`negativeByFixture[id]`** ids to
+   `DbReplayTest`. Leave a row out only when the translation genuinely garbles it (document why).
+4. Add the same cases as **hardcoded sequences** in `ReferenceWatcherTest` (so coverage holds without
+   the `.db`): positives with `assertEquals`/`any`, negatives with `assertNoEmit` (standalone + live
+   sticky). Gated-recall behaviour → toggle `Config.applyLevel(...)` in a focused test, restore to
+   `balanced` in `finally`.
+5. Run: `./gradlew test` then `./gradlew test -Dreplay.db="<local path>" -Dreplay.fixture=<id>`.
+6. New always-on guard? Keep it style-independent (ending whitelists / look-alike sets / alias-length
+   like the existing ones). New risky recall? Gate it behind a `Config` flag set in `applyLevel`.
 
 ---
 
@@ -180,19 +221,44 @@ chip; optionally auto-estimate.
 
 Mostly data-dependent (needs the incoming `.db` backups) plus a few engine cleanups.
 
-1. **`.db` replay harness.** Current regression uses hardcoded sequences (no SQLite dep in the
-   module). When more backups arrive, either add a dev-only script (Python, like the analysis here)
-   or a test-scoped sqlite-jdbc dependency to replay rows in `id` order and assert. Don't ship the
-   `.db` files in the repo.
+1. ~~**`.db` replay harness.**~~ **DONE.** `src/test/kotlin/engine/DbReplayTest.kt` replays a
+   `.db` (path via `-Dreplay.db=…`) in `id` order through one sticky context and asserts the
+   curated table; skips via JUnit `Assumptions.assumeTrue` when the prop/file is absent so CI
+   without the local files stays green. Test-scoped `org.xerial:sqlite-jdbc`. `.db` files are
+   never committed (`.gitignore` + §7). Hardcoded sequences in `ReferenceWatcherTest` give the
+   same coverage without the files.
+
+   **Precision guards added (always-on, style-independent):** the Russian `глав`/`стих` keyword
+   detectors now require a whole grammatical ending (not any prefix), so `стихотворение`/`главное`
+   no longer fire; `семья`-forms are rejected as numerals (collided with `семь`=7); bare cardinal
+   `один`/`one` ("one verse") is treated as filler so it can't bind to sticky — the EN form matters
+   because the translation track is fed through the same watcher. Finally, **ultra-short single-token
+   aliases (≤2 chars: `so`→Zeph, `re`/`ap`→Rev, `ge`, `ex`…) no longer match in the watcher** — they
+   are typed-input abbreviations that fired constantly on translated prose and hijacked the sticky
+   book; multi-word aliases (always ≥3 chars with a space) are kept.
+
+   **Music precision gate:** `ReferenceWatcher.process(..., isMusic)` skips detection (and leaves
+   sticky untouched) when the STT `speech_type` is `Music` — sung lyrics quote scripture as lyrics,
+   not as references. Wired through `DetectionEngine` (`UtteranceState.speechType`) and
+   `SttSocketClient` (`speech_type` from the live payload); replayed from the `speech_type` column in
+   `DbReplayTest`. Toggle `Config.suppressDuringMusic` (default on; independent of the level chip).
+   No-op on the two folded-in services (no sung-reference rows) — forward-looking guard.
+
+   **Aggressiveness-gated recall (rides the OFF/CONSERVATIVE/BALANCED/AGGRESSIVE chip):**
+   `Config.normalizeStt` (Cyrillic `э→е` before book resolution; BALANCED+) and
+   `Config.inferBookAtEnd` (book named *after* its numbers attaches to them; AGGRESSIVE only).
 2. **Synthetic stress corpus generator** — programmatic rapid-fire chains, STT-corrupted book names
    (edit-distance noise), dropped keywords. Precision negatives exist; the generator does not yet.
 3. **Cadence-adaptive sticky TTL** — auto-shrink on many distinct book changes/min. Mechanism only;
    needs real multi-speaker data to set the rate thresholds.
 4. **Fuzzy book matching** — `resolveStem` is prefix-only (edit distance 0). Raising tolerance for
    STT typos (e.g. `Ивангелие`) needs more typo examples before it's safe.
-5. **Per-language alias scoping** — still the full merged table; short-alias false positives are
-   currently mitigated structurally (watcher requires глава/стих or a number). Full per-language
-   tagging deferred.
+5. **Per-language alias scoping** — still the full merged table. Short-alias false positives are now
+   mitigated two ways: structurally (a bare book only sets sticky; emission still needs глава/стих or
+   a number) **and** by dropping ≤2-char single-token aliases in the watcher (kills `so`/`re`/`ap`
+   drift on translated prose). Still open: **3-char aliases that are real words** (`job`→Job, `am`,
+   `ru`) can fire on the EN track; quantify with backups before extending the block or doing full
+   per-language tagging.
 6. **Confidence-tiered auto-follow gating on the client** — engine already emits per-tier confidence
    + source; `BibleViewModel`/`autoFollow` could restrict auto-navigation to tier-1/corroborated.
 7. **Continuation engine windowing** — `ContinuationEngine` still scores against the whole growing
@@ -209,10 +275,54 @@ Mostly data-dependent (needs the incoming `.db` backups) plus a few engine clean
 `1-е послание Петра …` (book word between "1" and "Петра"); bare `Коринфянам 12` (1 vs 2 Cor);
 `Луки 22` (stem "лук" < min length). All low-frequency; revisit when backups quantify them.
 
+From the two folded-in services (locked as fixtures; fix gated/deferred):
+- **`эфесянам`** (STT writes `э`, alias is `ефесянам`) — handled by `Config.normalizeStt` (BALANCED+);
+  off at CONSERVATIVE by design.
+- **`книга Иисуса на Винах`** = Иисуса Навина (Joshua), book named at END after the numbers — the
+  attach-after-numbers path is gated by `Config.inferBookAtEnd` (AGGRESSIVE only). The Russian book
+  is STT-garbled (`Новина`/`на Винах`) and never resolves on its own, but the **English translation
+  track rescues it**: row #631 EN says "…Joshua…" → resolves via the alias table and seeds the
+  sticky book, so `14 стих 3 главы` (#633) and `С 5 стиха` (#661) bind to Joshua. With the real-clock
+  replay (TTL keeps Joshua across the 149 s read) and the short-alias guard (kills the `so`/`re`/`ap`
+  drift), the replay now asserts these **exactly**. Proven in isolation by `ReferenceWatcherTest`
+  (`garbled Russian book rescued by English translation track`).
+- **`Первая книга царств`** (word-ordinal numbered book, no digit) — needs numbered-book grammar in
+  `BookResolver`; low frequency, deferred this pass.
+
 ---
 
-## 7. Sample data location (local, not committed)
+## 7. Sample data (local only — never committed)
 
-Archived services used for this analysis (Downloads, not in repo):
-`2026-06-03__18-22-50_Church.db`, `2026-06-07__08-10-35_Church.db`.
-Future backups: drop here / note paths so the regression set keeps growing.
+Service `.db` backups used for analysis live on the maintainer's machine only; they are **not in the
+repo** and their filenames/paths are deliberately not recorded here (they contain full congregation
+transcripts). Two backups are folded into the regression set, referenced by neutral fixture ids:
+
+- **service1** — ~751 rows.
+- **service2** — ~802 rows.
+
+Curated expected table (fixture, row id → expected ref), replayed by `DbReplayTest`
+(`-Dreplay.db=<path> -Dreplay.fixture=service1|service2`) and locked in `ReferenceWatcherTest`. The
+pattern column describes the case; the actual transcript text is not reproduced here.
+
+| Fixture | Row | Pattern | Expected | Tier |
+|---------|-----|---------|----------|------|
+| service1 | 27 | explicit book + chapter + verse | Eph 4:6 | 1 |
+| service1 | 28 | sticky verse vs previous row | Eph 4:6 | 3 (sticky) |
+| service1 | 377 | word-ordinal chapter + "from N to M" range | Deut 6:4-9 | 1 |
+| service1 | 378 | explicit book + chapter + verse | Deut 6:4 | 1 |
+| service1 | 409→410 | split: book+chapter, then verse | Matt 7:21 | 3 (sticky) |
+| service2 | 3 | explicit book + chapter + verse | Col 3:21 | 1 |
+| service2 | 631→633 | book via translation track + verse-before-chapter | Joshua 3:14 | 3 |
+| service2 | 660→661 | sticky book+chapter, then "from verse N" | Joshua 4:5 | 3 |
+
+Precision negatives (must emit nothing): service1 #332/#356/#401/#662/#665/#701,
+service2 #12/#623/#624/#712.
+
+`DbReplayTest` asserts every curated row **exactly** (book + chapter + verse[+range]). This holds
+because the replay feeds the combined transcript + translation with each row's real `timestamp`
+(sticky TTL behaves as live) and the short-alias guard stops short cross-language abbreviations from
+hijacking the sticky book. One service2 row is intentionally not asserted (a chapter-only reference
+whose translation appends a spurious verse) — covered on the clean source-language path in
+`ReferenceWatcherTest`.
+
+Future backups: add them locally and extend the fixtures (see §5 "How to fold in the next backup").

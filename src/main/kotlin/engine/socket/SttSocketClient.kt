@@ -35,14 +35,14 @@ class SttSocketClient(
         // here previously split them into independent states that never combined.
         socket.on("transcription_update") { args ->
             extractTranscriptText(args)?.let { text ->
-                val events = detectionEngine.processTranscription("live", text)
+                val events = detectionEngine.processTranscription("live", text, extractSpeechType(args))
                 runBlocking { for (e in events) broadcaster.broadcast(e) }
             }
         }
 
         socket.on("translation_update") { args ->
             extractTranslationText(args)?.let { text ->
-                val events = detectionEngine.processTranslation("live", text)
+                val events = detectionEngine.processTranslation("live", text, extractSpeechType(args))
                 runBlocking { for (e in events) broadcaster.broadcast(e) }
             }
         }
@@ -52,6 +52,13 @@ class SttSocketClient(
 
     fun disconnect() {
         if (::socket.isInitialized) socket.disconnect()
+    }
+
+    // Best-effort speech_type from the payload (e.g. "Speaking"/"Quiet"/"Music"); null if absent so
+    // detection behaves unchanged until the STT stream provides it. Drives the music precision gate.
+    private fun extractSpeechType(args: Array<Any>): String? {
+        val payload = args.firstOrNull() as? JSONObject ?: return null
+        return payload.optString("speech_type", "").trim().takeIf { it.isNotEmpty() }
     }
 
     // Concat last 2 completed transcript segments + in_progress

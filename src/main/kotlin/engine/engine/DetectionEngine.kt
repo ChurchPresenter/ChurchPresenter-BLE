@@ -44,26 +44,31 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
     private val stabilizer = Stabilizer()
     private val utterances = HashMap<String, UtteranceState>()
 
-    fun processTranscription(id: String, text: String): List<ScriptureEvent> {
+    fun processTranscription(id: String, text: String, speechType: String? = null): List<ScriptureEvent> {
         val state = utterances.getOrPut(id) { UtteranceState(id) }
         state.transcript = text
+        if (speechType != null) state.speechType = speechType
         state.updatedAt = System.currentTimeMillis()
         return runDetection(state)
     }
 
-    fun processTranslation(id: String, text: String): List<ScriptureEvent> {
+    fun processTranslation(id: String, text: String, speechType: String? = null): List<ScriptureEvent> {
         val state = utterances.getOrPut(id) { UtteranceState(id) }
         state.translation = text
+        if (speechType != null) state.speechType = speechType
         state.updatedAt = System.currentTimeMillis()
         return runDetection(state)
     }
+
+    private fun isMusic(speechType: String?): Boolean = speechType.equals("Music", ignoreCase = true)
 
     private fun runDetection(state: UtteranceState): List<ScriptureEvent> {
         val combined = "${state.transcript} ${state.translation}".trim()
         val now = System.currentTimeMillis()
 
         // 1. Explicit / sticky references (stateful watcher). May yield several per utterance.
-        val refs = ReferenceWatcher.process(combined, state, now)
+        //    Suppressed on music segments (sung lyrics aren't references being looked up).
+        val refs = ReferenceWatcher.process(combined, state, now, isMusic = isMusic(state.speechType))
         if (refs.isNotEmpty()) {
             val emitted = ArrayList<ScriptureEvent>()
             for (ref in refs) {

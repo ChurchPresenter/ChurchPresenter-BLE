@@ -18,6 +18,7 @@ object NumberWords {
     fun parseToken(token: String): Int? {
         val t = token.trim().lowercase()
         if (t.isEmpty()) return null
+        if (t in NOT_NUMBERS) return null
         // digits, optionally with an ordinal suffix like "3-я", "21-й", "19-го", "2nd"
         DIGIT_ORD.find(t)?.let { return it.groupValues[1].toIntOrNull() }
         // a single number word: match a stem, but only when the remaining grammatical ending is
@@ -33,6 +34,15 @@ object NumberWords {
     // Russian ordinal/cardinal endings start with a vowel, soft sign, or й; Latin endings with a
     // consonant cluster (th/st/nd/rd) handled by DIGIT_ORD only. Used to gate stem matches.
     private val VALID_ENDING_START = "йяеёьоаиуыю".toSet()
+
+    // Genuine look-alikes that share a number stem but are NOT numerals. The forms of "семья"
+    // (family) collide with the stem "семь" (7) — e.g. "глава семьи" (head of household) would
+    // otherwise read as chapter 7. The VALID_ENDING gate can't catch these (their endings are
+    // grammatically valid), so reject them explicitly. "семью" is left out: it is also the
+    // instrumental of семь (7), so it stays ambiguous-but-numeric.
+    private val NOT_NUMBERS = setOf(
+        "семья", "семьи", "семье", "семьёй", "семьей", "семьею", "семей", "семьям", "семьями", "семьях",
+    )
 
     /**
      * Parses a run of number tokens starting at [start], returning (value, tokensConsumed) or null.

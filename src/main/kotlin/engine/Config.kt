@@ -32,13 +32,32 @@ object Config {
     // Gates the BM25 reverse (text) lookup. Explicit parsing + continuation always run.
     var reverseEnabled = true
 
-    /** Maps the client's aggressiveness level to reverse-lookup tuning. */
+    // Precision gate (independent of the aggressiveness level): when the STT engine labels a segment
+    // as music, skip explicit/sticky reference detection on it. Sung lyrics quote scripture but are
+    // not references being looked up, and they must not seed the sticky context. Requires a reliable
+    // speech_type from the STT stream; safe to disable if that signal is unreliable.
+    var suppressDuringMusic = true
+
+    // ── Aggressiveness-gated recall toggles (set by applyLevel) ───────────────────
+    // Risky inferences ride the existing level chip rather than being on unconditionally.
+    // Defaults mirror BALANCED so a fresh Config (no applyLevel) behaves as the default level.
+
+    // Fold STT spelling variants before book resolution (Cyrillic э→е so "эфесянам"→"ефесянам").
+    // Cheap and almost always harmless (most э-words are fillers), but off at CONSERVATIVE.
+    var normalizeStt: Boolean = true
+
+    // Allow a Book named AFTER its chapter/verse numbers in the same utterance to attach to them
+    // (e.g. "14 стих 3 главы … Матфея" → Matt 3:14) instead of flushing them as sticky. Higher
+    // false-positive risk → AGGRESSIVE only.
+    var inferBookAtEnd: Boolean = false
+
+    /** Maps the client's aggressiveness level to reverse-lookup tuning + gated recall. */
     fun applyLevel(level: String) {
         when (level.lowercase()) {
-            "off"          -> { reverseEnabled = false }
-            "conservative" -> { reverseEnabled = true; minConfidenceEmit = 0.6; reverseMinScoreRatio = 2.5; stickyTtlMs = 240_000L }
-            "balanced"     -> { reverseEnabled = true; minConfidenceEmit = 0.4; reverseMinScoreRatio = 2.0; stickyTtlMs = 180_000L }
-            "aggressive"   -> { reverseEnabled = true; minConfidenceEmit = 0.3; reverseMinScoreRatio = 1.5; stickyTtlMs = 90_000L }
+            "off"          -> { reverseEnabled = false; normalizeStt = false; inferBookAtEnd = false }
+            "conservative" -> { reverseEnabled = true; minConfidenceEmit = 0.6; reverseMinScoreRatio = 2.5; stickyTtlMs = 240_000L; normalizeStt = false; inferBookAtEnd = false }
+            "balanced"     -> { reverseEnabled = true; minConfidenceEmit = 0.4; reverseMinScoreRatio = 2.0; stickyTtlMs = 180_000L; normalizeStt = true;  inferBookAtEnd = false }
+            "aggressive"   -> { reverseEnabled = true; minConfidenceEmit = 0.3; reverseMinScoreRatio = 1.5; stickyTtlMs = 90_000L;  normalizeStt = true;  inferBookAtEnd = true }
         }
     }
 }
