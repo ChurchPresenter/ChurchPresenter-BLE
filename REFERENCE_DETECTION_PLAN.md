@@ -31,6 +31,27 @@ Changed files:
 `detection/ExplicitParser.kt` is retained (still covered by `ExplicitParserTest`) but no longer on
 the live path — the watcher supersedes it.
 
+### 2026-06-25 service round (post-deployment fixes)
+Driven by a live **auto-follow** service (15 go-lives, all `source:"auto"`, so `live-references`
+reflects engine output and the `.db` transcript is ground truth):
+- **Epistle ordinal resolution** (`ReferenceWatcher`): `[1-е/2-е/Первое] Послание Иоанна|Петра` now
+  resolves to the **epistle** (1/2/3 John = 62–64, 1/2 Peter = 60–61), not the Gospel/bare name. Closes
+  the long-standing known-miss "book word between `1` and `Петра`/`Иоанна`". A look-back recognises an
+  «послание»/«письмо» marker (+ optional «к» connector + ordinal digit/word); a bare `Иоанна`/`Петра`
+  with no marker stays the gospel/alias reading (precision preserved).
+- **Re-emission churn control** (`Stabilizer`/`Config`): a held passage re-emits only on a
+  ≥`reEmitMinDelta` (0.15) confidence move **and** after `reEmitCooldownMs` (10 s). Stops the 11×
+  re-present of a held verse as reverse confidence oscillates while the window slides.
+- **Candidate-log cleanup** (`DetectionEngine`): stop logging `deduped` rows (a held passage repeating —
+  no tuning signal, they swamped the log); keep only genuine `below-confidence`/`low-agreement` misses.
+- **CP-side numbering/order fixes** (ChurchPresenter `BibleViewModel`/`BibleEngineClient`): the engine
+  was already correct — the *display* mapping was wrong. See **§8 (gotchas)**. The engine now forwards
+  `canonicalCodeStart`/`canonicalCodeEnd` so the app can land the reference in the primary Bible's own
+  numbering.
+
+Tests: `ReferenceWatcherTest` (epistle + canonical-name ground truth), new `StabilizerTest` (churn
+bounds). Committed on the engine submodule as `f090b0a`.
+
 ---
 
 ## 0. Where things live
@@ -272,8 +293,10 @@ Mostly data-dependent (needs the incoming `.db` backups) plus a few engine clean
     (bare "Коринфянам"/"Петра"); short genitive stems excluded by the min-4 rule (e.g. "Луки").
 
 ### Known-miss examples (kept as future fixtures)
-`1-е послание Петра …` (book word between "1" and "Петра"); bare `Коринфянам 12` (1 vs 2 Cor);
-`Луки 22` (stem "лук" < min length). All low-frequency; revisit when backups quantify them.
+`1-е послание Петра …` (book word between "1" and "Петра") — **FIXED** in the 2026-06-25 round
+(epistle ordinal resolution; see top section + `ReferenceWatcherTest`). Still open: bare `Коринфянам 12`
+(1 vs 2 Cor, no number spoken); `Луки 22` (stem "лук" < min length). All low-frequency; revisit when
+backups quantify them.
 
 From the two folded-in services (locked as fixtures; fix gated/deferred):
 - **`эфесянам`** (STT writes `э`, alias is `ефесянам`) — handled by `Config.normalizeStt` (BALANCED+);
@@ -326,3 +349,73 @@ whose translation appends a spurious verse) — covered on the clean source-lang
 `ReferenceWatcherTest`.
 
 Future backups: add them locally and extend the fixtures (see §5 "How to fold in the next backup").
+
+---
+
+## 8. Gotchas — what to watch out for (book / reference mismatches)
+
+The engine and the ChurchPresenter UI use **different book/chapter numbering anchors**. Most "the
+engine detected the right verse but the wrong thing showed on screen" bugs come from mixing them up.
+The engine reasons in **canonical (Protestant) numbering**; a loaded Bible may store books in a
+different **order** and chapters/verses in a different **numbering**. Keep these straight:
+
+### 8a. Book id ≠ book position (NEVER map a canonical id positionally)
+The engine emits a **canonical book id** (`1=Genesis … 62=1 John … 66=Revelation`, from
+`BookResolver`). A Bible's display list (`Bible.getBooks()`) is in the **file's order**, which is NOT
+always canonical:
+- The **Russian Synodal** Bible places the General Epistles (James, 1–2 Peter, 1–3 John, Jude)
+  **right after Acts**, before Paul's letters. So 1 John sits at display **index 47**, and display
+  index **61 is 2 Timothy**.
+- ⚠️ Mapping `index = canonicalId − 1` then sends **1 John (62) → index 61 → 2 Timothy** — every NT
+  epistle shifts. (This was a real regression.)
+- ✅ Map by the book's canonical **id field**, not position: `Bible.getDisplayIndexForBookId(id)`
+  (it does `books.indexOfFirst { it.bookId == id }`). Works for any Bible / any order, including a
+  Protestant-ordered one where it coincidentally equals `id − 1`.
+
+### 8b. Chapter/verse numbering divergence — Psalms (LXX/Synodal vs Hebrew)
+Same psalm, different number depending on the tradition: **Hebrew/English Ps 23 = Synodal/LXX Ps 22**
+(LXX merges Ps 9+10, so most of the Psalter is shifted by one). Joel, Malachi, 3 John, and a few
+others also differ. The `.spb` carries **two** numbers per verse: the internal **code**
+(`BXXXCXXXVXXX`, Hebrew) and the **native/display** number (e.g. Synodal for RST). For RST:
+`B019C023…` (code 23) is displayed as **Псалом 22**.
+- ✅ The engine forwards `canonicalCodeStart`/`canonicalCodeEnd` (the **code**, numbering-independent).
+  The app lands it in the **primary** Bible's own numbering with
+  `Bible.getVerseDetailsByCode(codeBook, codeChapter, codeVerse)` (uses the per-Bible
+  `codeToDisplayMap`) — the same bridge that aligns the secondary Bible.
+- The displayed number therefore depends on **which Bible is primary**; the *interpretation* of the
+  spoken number depends on **the spoken language** (the engine's `pickTranslation` resolves a Russian
+  "Псалом 22" against RST and an English "Psalm 23" against KJV — both produce the same code).
+- ⚠️ Do NOT pass the engine's raw `chapter` straight to display when primary ≠ the engine's matched
+  translation — that shows the wrong Psalm number. Always go through the code.
+- Known limitation: `getVerseDetailsByCode` translates the **chapter** but echoes the **verse**, so a
+  titled Psalm (Hebrew superscription counted as verse 1 in Synodal) can be ±1 on the verse. Matches
+  the existing secondary-Bible behaviour; revisit if it bites.
+
+### 8c. The ground-truth log must be in canonical numbering
+`live-references` (TrainingDataLogger) is the *ground truth* a `.db` analysis diffs against the
+engine's `detection-log`. They must use the **same** numbering or correct detections look wrong:
+- ⚠️ Logging the raw **display position + 1** caused the original misdiagnosis — 1 John's Synodal index
+  47 → `+1` = `48`, which *looks like* Galatians' canonical id, and James/2 Cor/Gal landed on
+  Romans/1 Tim/2 Tim the same way. The display was correct; the **log** was in the wrong numbering.
+- ✅ Log the **canonical book id** (`getBookId(displayIndex)`), so `live-references.book` ==
+  `detection-log.book`. (Chapter is still display-numbered — when comparing Psalm chapters across the
+  two logs, remember they have different anchors.)
+
+### 8d. Verification checklist before trusting a run
+- Decode `live-references.book` and `detection-log.book` as **canonical** ids (post-fix) and confirm
+  they match — but also **watch the actual screen**: the on-screen book name is the only real proof
+  (a number in a log can coincide with a different book's id, see 8c).
+- Test with **each** Bible set as primary (Synodal-ordered and Protestant-ordered), and exercise a
+  **Psalm** in both spoken languages. A change that "works" with RST-primary can still be wrong with an
+  English primary, and vice-versa.
+- Books most likely to expose order bugs: the **NT General Epistles + Pastorals** (James↔Romans,
+  1 John↔2 Timothy, 2 Cor↔1 Tim, Galatians↔2 Tim under the Synodal shift). Chapters most likely to
+  expose numbering bugs: **Psalms** (and check Joel/Malachi/3 John).
+
+### 8e. Other matching foot-guns (engine side)
+- `pickTranslation` hardcodes `RUS_RST`/`ENG_KJV` ids before the language fallback (§6 #9) — fragile if
+  the loaded SPB ids differ. A wrong translation pick can yield a verse in the wrong numbering.
+- Cross-language alias noise: short single-token aliases (`so`, `re`, `ap`, and 3-char real words like
+  `job`/`am`/`ru`) can fire on the English translation track and hijack the sticky book (§6 #5).
+- Bare ambiguous numbered books with no number spoken (`Коринфянам`, `Петра`) still can't pick 1 vs 2
+  (§6 #10) — distinct from the now-fixed *marked* epistle case (`Послание … Петра`).
