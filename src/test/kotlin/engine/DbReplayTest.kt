@@ -13,8 +13,8 @@ import kotlin.test.assertTrue
 /**
  * Regression replay over an archived service `.db` backup. The `.db` files are never committed (they
  * contain full service transcripts); pass one via `-Dreplay.db=…` plus a curated fixture id via
- * `-Dreplay.fixture=service1|service2`, otherwise the test skips gracefully so CI without the local
- * files still passes.
+ * `-Dreplay.fixture=service1|service2|service3`, otherwise the test skips gracefully so CI without
+ * the local files still passes.
  *
  * Streams each row in `id` order through a single sticky context — mirroring the live feed, which
  * concatenates transcript + translation (`DetectionEngine.runDetection` builds `"$transcript
@@ -28,6 +28,7 @@ import kotlin.test.assertTrue
  *
  *     ./gradlew test -Dreplay.db="/path/to/your/service1.db" -Dreplay.fixture=service1
  *     ./gradlew test -Dreplay.db="/path/to/your/service2.db" -Dreplay.fixture=service2
+ *     ./gradlew test -Dreplay.db="/path/to/your/service3.db" -Dreplay.fixture=service3
  */
 class DbReplayTest {
 
@@ -58,6 +59,11 @@ class DbReplayTest {
             633 to Expect(6, 3, 14),   // verse-before-chapter; book resolved via translation track
             661 to Expect(6, 4, 5),    // sticky book+chapter, then "from verse N"
         ),
+        // service3 (~715 rows, new STT schema). Curate true-positive rows from the local backup and
+        // list them here (id → Expect), mirroring the recipe above. Left empty until the rows are
+        // curated against the local `.db` — the test then skips this fixture rather than asserting
+        // fabricated ids. Add matching clean-form cases in ReferenceWatcherTest as they are curated.
+        "service3" to emptyMap(),
     )
 
     // One service2 row is intentionally not asserted: the translation's trailing number is misread as
@@ -68,6 +74,8 @@ class DbReplayTest {
     private val negativeByFixture: Map<String, Set<Int>> = mapOf(
         "service1" to setOf(332, 356, 401, 662, 665, 701),
         "service2" to setOf(12, 623, 624, 712),
+        // service3 precision negatives — curate must-emit-nothing rows from the local backup here.
+        "service3" to emptySet(),
     )
 
     private val tsFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -90,7 +98,7 @@ class DbReplayTest {
         val exact = exactByFixture[fixture] ?: emptyMap()
         val negatives = negativeByFixture[fixture] ?: emptySet()
         assumeTrue(exact.isNotEmpty() || negatives.isNotEmpty(),
-            "set -Dreplay.fixture=service1|service2 to assert curated rows — skipping")
+            "set -Dreplay.fixture=service1|service2|service3 to assert curated rows — skipping")
 
         Config.applyLevel("balanced")
         try {

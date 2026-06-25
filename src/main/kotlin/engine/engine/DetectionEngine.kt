@@ -31,6 +31,11 @@ data class ScriptureEvent(
     val confidence: Double,
     val matchType: String,
     val translation: String,
+    // STT segment that triggered this detection. Clock-free correlation key shared by the STT
+    // transcript rows, the detection log, and the operator's go-live log. Null when the STT stream
+    // doesn't provide it (older schema).
+    val segmentId: String? = null,
+    val sttStartTime: Double? = null,
 )
 
 class DetectionEngine(private val translations: List<EngineTranslation>) {
@@ -44,18 +49,34 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
     private val stabilizer = Stabilizer()
     private val utterances = HashMap<String, UtteranceState>()
 
-    fun processTranscription(id: String, text: String, speechType: String? = null): List<ScriptureEvent> {
+    fun processTranscription(
+        id: String,
+        text: String,
+        speechType: String? = null,
+        segmentId: String? = null,
+        startTime: Double? = null,
+    ): List<ScriptureEvent> {
         val state = utterances.getOrPut(id) { UtteranceState(id) }
         state.transcript = text
         if (speechType != null) state.speechType = speechType
+        if (segmentId != null) state.segmentId = segmentId
+        if (startTime != null) state.sttStartTime = startTime
         state.updatedAt = System.currentTimeMillis()
         return runDetection(state)
     }
 
-    fun processTranslation(id: String, text: String, speechType: String? = null): List<ScriptureEvent> {
+    fun processTranslation(
+        id: String,
+        text: String,
+        speechType: String? = null,
+        segmentId: String? = null,
+        startTime: Double? = null,
+    ): List<ScriptureEvent> {
         val state = utterances.getOrPut(id) { UtteranceState(id) }
         state.translation = text
         if (speechType != null) state.speechType = speechType
+        if (segmentId != null) state.segmentId = segmentId
+        if (startTime != null) state.sttStartTime = startTime
         state.updatedAt = System.currentTimeMillis()
         return runDetection(state)
     }
@@ -133,8 +154,14 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
     }
 
     private fun logged(state: UtteranceState, events: List<ScriptureEvent>): List<ScriptureEvent> {
-        for (e in events) DetectionLogger.log(state.transcript, state.translation, e)
-        return events
+        // Stamp the triggering STT segment onto every emitted event here — the single funnel for all
+        // detection paths — so both the broadcast and the detection log carry the correlation key.
+        val stamped =
+            if (state.segmentId != null || state.sttStartTime != null)
+                events.map { it.copy(segmentId = state.segmentId, sttStartTime = state.sttStartTime) }
+            else events
+        for (e in stamped) DetectionLogger.log(state.transcript, state.translation, e)
+        return stamped
     }
 
     private fun buildRefEvent(state: UtteranceState, ref: ReferenceWatcher.Ref): ScriptureEvent? {

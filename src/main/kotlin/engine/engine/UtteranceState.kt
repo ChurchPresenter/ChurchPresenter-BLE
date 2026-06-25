@@ -20,6 +20,12 @@ data class UtteranceState(
     // Most recent STT speech_type for this stream (e.g. "Speaking"/"Quiet"/"Music"); drives the
     // music precision gate in ReferenceWatcher. Null = unknown (treated as not music).
     var speechType: String? = null,
+    // Most recent STT segment_id + session-relative start_time that fed this utterance. Stamped onto
+    // every emitted detection so transcripts, detections, and displays all reference the same STT
+    // segment — clock-free cross-machine correlation (no NTP/wall-clock needed). Null until the STT
+    // stream provides them.
+    var segmentId: String? = null,
+    var sttStartTime: Double? = null,
     // ── Sticky reference context (ReferenceWatcher) ──
     // The most recently announced book + chapter, carried across utterances so a later bare
     // "N стих" (verse-by-verse reading) resolves against it. Expires after Config.stickyTtlMs.

@@ -48,19 +48,33 @@ object EngineServer {
         DetectionLogger.path = File(bibleRoot, "detection-log.jsonl").absolutePath
         val broadcaster = Broadcaster()
 
-        val sttClient: SttSocketClient? =
-            if (sttUrl.isNotBlank()) SttSocketClient(sttUrl, detectionEngine, broadcaster).also { it.connect() }
-            else null
+        // Bind the WS server BEFORE connecting the STT client. If the port is already taken (e.g. it
+        // collides with the Companion server) the bind throws here — we must surface it and bail,
+        // rather than leak an STT client that keeps detecting while no client can ever reach us.
+        val server = try {
+            embeddedServer(Netty, port = port) {
+                install(WebSockets) {
+                    pingPeriodMillis = 30_000
+                    timeoutMillis = 60_000
+                    maxFrameSize = Long.MAX_VALUE
+                    masking = false
+                }
+                routing { bibleEngineSocket(detectionEngine, broadcaster) }
+            }.start(wait = false)
+        } catch (e: Exception) {
+            System.err.println("bible-engine: failed to bind WS server on port $port — ${e.message}")
+            return null
+        }
 
-        val server = embeddedServer(Netty, port = port) {
-            install(WebSockets) {
-                pingPeriodMillis = 30_000
-                timeoutMillis = 60_000
-                maxFrameSize = Long.MAX_VALUE
-                masking = false
+        val sttClient: SttSocketClient? =
+            try {
+                if (sttUrl.isNotBlank()) SttSocketClient(sttUrl, detectionEngine, broadcaster).also { it.connect() }
+                else null
+            } catch (e: Exception) {
+                System.err.println("bible-engine: failed to connect STT client — ${e.message}")
+                runCatching { server.stop(500, 1000) }
+                return null
             }
-            routing { bibleEngineSocket(detectionEngine, broadcaster) }
-        }.start(wait = false)
 
         return EngineHandle {
             runCatching { sttClient?.disconnect() }
