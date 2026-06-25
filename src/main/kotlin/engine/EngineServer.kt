@@ -45,6 +45,7 @@ object EngineServer {
             System.err.println("bible-engine: no translations loaded from $bibleRoot")
             return null
         }
+        Config.loadedBibles = translations.map { it.id }
         val detectionEngine = DetectionEngine(translations)
         // Grow a labeled corpus for free: every emitted detection + its triggering text is appended
         // here, so each live service becomes regression data without manual annotation.

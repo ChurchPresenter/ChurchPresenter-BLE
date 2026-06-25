@@ -10,11 +10,13 @@ class Stabilizer(private val clock: () -> Long = System::currentTimeMillis) {
     sealed class EmitDecision {
         data class NewDetection(val key: String) : EmitDecision()
         data class UpdatedDetection(val key: String, val oldConfidence: Double) : EmitDecision()
-        object Suppress : EmitDecision()
+        // [reason] = "below-confidence" (under the emit threshold) or "deduped" (same ref, no change
+        // within the TTL). Surfaced so the candidate log can record why a near-miss was dropped.
+        data class Suppress(val reason: String) : EmitDecision()
     }
 
     fun evaluate(key: String, confidence: Double): EmitDecision {
-        if (confidence < Config.minConfidenceEmit) return EmitDecision.Suppress
+        if (confidence < Config.minConfidenceEmit) return EmitDecision.Suppress("below-confidence")
 
         val now = clock()
         val seenAt = lastEmittedAt[key]
@@ -32,7 +34,7 @@ class Stabilizer(private val clock: () -> Long = System::currentTimeMillis) {
             lastConfidence[key] = confidence
             EmitDecision.UpdatedDetection(key, prev)
         } else {
-            EmitDecision.Suppress
+            EmitDecision.Suppress("deduped")
         }
     }
 

@@ -17,6 +17,11 @@ object Config {
     // Min fraction of a verse's words that must appear in a track (transcript / translation) for that
     // track to be marked as corroborating the detection (the per-chip transcription/translation icons).
     var trackCoverageMin = 0.4
+    // Near-miss candidate logging (training data): log detections the engine BUILT but did NOT emit
+    // (below the confidence threshold, deduped, or failed reverse-agreement), so false negatives are
+    // visible for tuning. Floored to avoid noise. Toggle off with -Dengine.logCandidates=false.
+    var logCandidates = System.getProperty("engine.logCandidates")?.toBooleanStrictOrNull() ?: true
+    var candidateLogMinConfidence = 0.15
     val continuationTimeoutMs = 30_000L
     val dedupWindow = 32
     // Suppress an identical reference only within this window (time-based, replaces the old fixed
@@ -54,8 +59,17 @@ object Config {
     // false-positive risk → AGGRESSIVE only.
     var inferBookAtEnd: Boolean = false
 
+    // The active aggressiveness level name (off / conservative / balanced / aggressive), recorded on
+    // each logged detection so a row self-describes which tuning produced it (it can change mid-session).
+    var level: String = "balanced"
+
+    // Translation ids actually indexed this session (e.g. ["RUS_RST","ENG_KJV"]) — logged in the
+    // per-session header so a service's results are tied to the Bibles that produced them.
+    var loadedBibles: List<String> = emptyList()
+
     /** Maps the client's aggressiveness level to reverse-lookup tuning + gated recall. */
     fun applyLevel(level: String) {
+        this.level = level.lowercase()
         when (level.lowercase()) {
             "off"          -> { reverseEnabled = false; normalizeStt = false; inferBookAtEnd = false }
             "conservative" -> { reverseEnabled = true; minConfidenceEmit = 0.6; reverseMinScoreRatio = 2.5; stickyTtlMs = 240_000L; normalizeStt = false; inferBookAtEnd = false }

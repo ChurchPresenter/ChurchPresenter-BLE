@@ -14,6 +14,9 @@ object ReverseLookup {
         val text: String,
         val score: Double,
         val confidence: Double,
+        // Top-1 / top-2 BM25 score ratio (the margin over the runner-up). Logged for tuning the
+        // reverseMinScoreRatio gate. Double.MAX_VALUE when there was no runner-up.
+        val ratio: Double = Double.MAX_VALUE,
     )
 
     fun search(
@@ -78,6 +81,7 @@ object ReverseLookup {
             text = top.verse.text,
             score = top.score,
             confidence = confidence,
+            ratio = ratio,
         )
     }
 }

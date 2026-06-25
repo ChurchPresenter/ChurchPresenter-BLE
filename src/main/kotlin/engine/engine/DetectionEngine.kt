@@ -39,6 +39,13 @@ data class ScriptureEvent(
     // Which STT track(s) corroborate this detection — subset of {"transcription","translation"}.
     // A corroboration/confidence signal for the UI: both present = strongest.
     val tracks: List<String> = emptyList(),
+    // ── Diagnostics (logged for training; not used by the UI) ──
+    val tier: Int? = null,             // explicit-ref tier (1/2/3); null for reverse/continuation
+    val bm25Score: Double? = null,     // reverse: top BM25 score
+    val bm25Ratio: Double? = null,     // reverse: top-1/top-2 score ratio (margin over runner-up)
+    val speechType: String? = null,    // STT speech_type at decision time (Speaking/Quiet/Music)
+    val stickyBook: Int? = null,       // sticky context book when this fired
+    val stickyChapter: Int? = null,    // sticky context chapter when this fired
 )
 
 class DetectionEngine(private val translations: List<EngineTranslation>) {
@@ -97,9 +104,13 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
             val emitted = ArrayList<ScriptureEvent>()
             for (ref in refs) {
                 val event = buildRefEvent(state, ref) ?: continue
-                stabilizer.evaluate(refKey(event), event.confidence).toEvent(event)?.let {
-                    recordDetection(state, it)
-                    emitted.add(it)
+                val decision = stabilizer.evaluate(refKey(event), event.confidence)
+                val out = decision.toEvent(event)
+                if (out != null) {
+                    recordDetection(state, out)
+                    emitted.add(out)
+                } else if (decision is Stabilizer.EmitDecision.Suppress) {
+                    logCandidate(state, event, decision.reason)
                 }
             }
             if (emitted.isNotEmpty()) return logged(state, emitted)
@@ -113,19 +124,26 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
             val verse = t.lookupVerse(reverse.bookNum, reverse.chapter, reverse.verse)
                 ?: return emptyList()
             val agreement = AgreementScorer.score(verse.text, state.transcript, state.translation)
+            val event = buildEvent(
+                id = state.id,
+                verse = verse,
+                translation = t,
+                confidence = reverse.confidence,
+                matchType = "reverse",
+                verseEnd = null,
+            ).copy(bm25Score = reverse.score, bm25Ratio = reverse.ratio.takeIf { it.isFinite() && it < 1e6 })
             if (agreement >= Config.reverseMinAgreement) {
-                val event = buildEvent(
-                    id = state.id,
-                    verse = verse,
-                    translation = t,
-                    confidence = reverse.confidence,
-                    matchType = "reverse",
-                    verseEnd = null,
-                )
-                stabilizer.evaluate(refKey(event), event.confidence).toEvent(event)?.let {
-                    recordDetection(state, it)
-                    return logged(state, listOf(it))
+                val decision = stabilizer.evaluate(refKey(event), event.confidence)
+                val out = decision.toEvent(event)
+                if (out != null) {
+                    recordDetection(state, out)
+                    return logged(state, listOf(out))
+                } else if (decision is Stabilizer.EmitDecision.Suppress) {
+                    logCandidate(state, event, decision.reason)
                 }
+            } else {
+                // BM25 hit that didn't share enough spoken words to fire — the prime near-miss to study.
+                logCandidate(state, event, "low-agreement")
             }
         }
 
@@ -140,9 +158,12 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
                 matchType = "continuation",
                 verseEnd = null,
             ).copy(type = "scripture.continuation")
-            if (stabilizer.evaluate(refKey(event), event.confidence) != Stabilizer.EmitDecision.Suppress) {
+            val decision = stabilizer.evaluate(refKey(event), event.confidence)
+            if (decision !is Stabilizer.EmitDecision.Suppress) {
                 recordDetection(state, event)
                 return logged(state, listOf(event))
+            } else {
+                logCandidate(state, event, decision.reason)
             }
         }
 
@@ -153,7 +174,17 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
     private fun Stabilizer.EmitDecision.toEvent(event: ScriptureEvent): ScriptureEvent? = when (this) {
         is Stabilizer.EmitDecision.NewDetection -> event
         is Stabilizer.EmitDecision.UpdatedDetection -> event.copy(type = "scripture.updated")
-        Stabilizer.EmitDecision.Suppress -> null
+        is Stabilizer.EmitDecision.Suppress -> null
+    }
+
+    /**
+     * Records a built-but-not-emitted detection to the candidate (near-miss) log for training, stamped
+     * with the same segment/track context as a real emission. Floored + toggle-gated; never throws.
+     */
+    private fun logCandidate(state: UtteranceState, event: ScriptureEvent, reason: String) {
+        if (!Config.logCandidates || event.confidence < Config.candidateLogMinConfidence) return
+        val stamped = stamp(state, event, System.currentTimeMillis())
+        DetectionLogger.logCandidate(state.transcript, state.translation, stamped, reason)
     }
 
     private fun logged(state: UtteranceState, events: List<ScriptureEvent>): List<ScriptureEvent> {
@@ -161,16 +192,21 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         // the single funnel for all detection paths — so both the broadcast and the detection log
         // carry the correlation key and the transcription/translation markers.
         val now = System.currentTimeMillis()
-        val stamped = events.map {
-            it.copy(
-                segmentId = state.segmentId ?: it.segmentId,
-                sttStartTime = state.sttStartTime ?: it.sttStartTime,
-                tracks = corroboratingTracks(state, it, now),
-            )
-        }
+        val stamped = events.map { stamp(state, it, now) }
         for (e in stamped) DetectionLogger.log(state.transcript, state.translation, e)
         return stamped
     }
+
+    /** Stamps the per-utterance context (segment, tracks, speech type, sticky) onto an event. */
+    private fun stamp(state: UtteranceState, event: ScriptureEvent, now: Long): ScriptureEvent =
+        event.copy(
+            segmentId = state.segmentId ?: event.segmentId,
+            sttStartTime = state.sttStartTime ?: event.sttStartTime,
+            tracks = corroboratingTracks(state, event, now),
+            speechType = state.speechType ?: event.speechType,
+            stickyBook = state.watchBook ?: event.stickyBook,
+            stickyChapter = state.watchChapter ?: event.stickyChapter,
+        )
 
     /** The STT track(s) that support [event] — verse text read in the track, or its citation spoken there. */
     private fun corroboratingTracks(state: UtteranceState, event: ScriptureEvent, now: Long): List<String> {
@@ -241,6 +277,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
             confidence = confidence,
             matchType = matchType,
             translation = t.abbreviation,
+            tier = ref.tier,
         )
     }
 
