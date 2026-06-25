@@ -5,52 +5,10 @@ stateful detector design, how it stays robust across speaking/transcription styl
 validation strategy, and the work still outstanding. Driven by real STT data (archived service
 `.db` files). **Primary language is Russian** (see project memory).
 
-Status: **CORE IMPLEMENTED** (unit tests green + a skip-when-absent `.db` replay). Data-dependent
-tuning + a few items remain — see §6. Two archived backups folded in (§5/§7).
-
-### Implemented so far (commit this branch)
-New files:
-- `detection/NumberWords.kt` (+ `test/NumberWordsTest.kt`) — digits, digit-ordinals, RU/EN number words.
-- `detection/ReferenceWatcher.kt` (+ `test/ReferenceWatcherTest.kt`) — stateful evidence-tiered watcher.
-- `engine/DetectionLogger.kt` — appends every emission + triggering text to `detection-log.jsonl`.
-
-Changed files:
-- `socket/SttSocketClient.kt` — both streams now feed ONE utterance id `"live"` (Bug #1).
-- `engine/DetectionEngine.kt` — explicit stage = ReferenceWatcher; AgreementScorer now gates reverse
-  + scores sticky (tier 3); emissions logged.
-- `engine/UtteranceState.kt` — implements `ReferenceWatcher.Sticky` (watchBook/Chapter/ExpiresAt).
-- `detection/BookResolver.kt` — inflection-tolerant `resolveStem()` (Матфея/Даниила/Римлянам…).
-- `detection/ReverseLookup.kt` — candidate dedup by (book,ch,verse) before the ratio gate (Bug #3).
-- `bible/BibleIndex.kt` — stopword filtering in `tokenize` (Bug #4).
-- `engine/Stabilizer.kt` — time-based dedup via `Config.dedupTtlMs` (Bug #7).
-- `engine/EngineServer.kt` — sets `DetectionLogger.path`.
-- `bible/SpbLoader.kt` — `loadDefaults()` falls back to `loadAll()` when no allow-list (so reverse
-  tests/engine actually have data).
-- `Config.kt` — `stickyTtlMs`, `dedupTtlMs`, `reverseMinAgreement`; level chip maps to sticky TTL.
-
-`detection/ExplicitParser.kt` is retained (still covered by `ExplicitParserTest`) but no longer on
-the live path — the watcher supersedes it.
-
-### 2026-06-25 service round (post-deployment fixes)
-Driven by a live **auto-follow** service (15 go-lives, all `source:"auto"`, so `live-references`
-reflects engine output and the `.db` transcript is ground truth):
-- **Epistle ordinal resolution** (`ReferenceWatcher`): `[1-е/2-е/Первое] Послание Иоанна|Петра` now
-  resolves to the **epistle** (1/2/3 John = 62–64, 1/2 Peter = 60–61), not the Gospel/bare name. Closes
-  the long-standing known-miss "book word between `1` and `Петра`/`Иоанна`". A look-back recognises an
-  «послание»/«письмо» marker (+ optional «к» connector + ordinal digit/word); a bare `Иоанна`/`Петра`
-  with no marker stays the gospel/alias reading (precision preserved).
-- **Re-emission churn control** (`Stabilizer`/`Config`): a held passage re-emits only on a
-  ≥`reEmitMinDelta` (0.15) confidence move **and** after `reEmitCooldownMs` (10 s). Stops the 11×
-  re-present of a held verse as reverse confidence oscillates while the window slides.
-- **Candidate-log cleanup** (`DetectionEngine`): stop logging `deduped` rows (a held passage repeating —
-  no tuning signal, they swamped the log); keep only genuine `below-confidence`/`low-agreement` misses.
-- **CP-side numbering/order fixes** (ChurchPresenter `BibleViewModel`/`BibleEngineClient`): the engine
-  was already correct — the *display* mapping was wrong. See **§8 (gotchas)**. The engine now forwards
-  `canonicalCodeStart`/`canonicalCodeEnd` so the app can land the reference in the primary Bible's own
-  numbering.
-
-Tests: `ReferenceWatcherTest` (epistle + canonical-name ground truth), new `StabilizerTest` (churn
-bounds). Committed on the engine submodule as `f090b0a`.
+Status: **CORE IMPLEMENTED** — unit tests green + a skip-when-absent `.db` replay; two archived
+services folded in as regression fixtures (§5/§7). The stateful `ReferenceWatcher` (not the legacy
+`ExplicitParser`, retained test-only) is the live explicit stage. Remaining work — mostly
+data-dependent tuning — is in §6.
 
 ---
 
@@ -204,7 +162,7 @@ chip; optionally auto-estimate.
    edit-distance noise, drop keywords); mixed digit/word numbers; out-of-order `глава`/number.
 3. **Grow the real corpus for free** — services already archive to `.db`. Add a column
    logging what the engine detected per row; every service becomes labeled-ish regression
-   data. Periodically review misses. (More backups incoming — fold them in here.)
+   data. Periodically review misses and fold new backups in here (recipe below).
    → Two data improvements are tracked as separate handoff specs (kept out of the repo, passed to the
    respective developers): (a) **transcription-side** signals — reliable `speech_type`, millisecond
    timestamps, per-word confidence, partials, language tags; (b) **ChurchPresenter-side** labels —
@@ -240,63 +198,37 @@ chip; optionally auto-estimate.
 
 ## 6. Remaining work
 
-Mostly data-dependent (needs the incoming `.db` backups) plus a few engine cleanups.
+Mostly data-dependent (needs more `.db` backups) plus a few engine cleanups.
 
-1. ~~**`.db` replay harness.**~~ **DONE.** `src/test/kotlin/engine/DbReplayTest.kt` replays a
-   `.db` (path via `-Dreplay.db=…`) in `id` order through one sticky context and asserts the
-   curated table; skips via JUnit `Assumptions.assumeTrue` when the prop/file is absent so CI
-   without the local files stays green. Test-scoped `org.xerial:sqlite-jdbc`. `.db` files are
-   never committed (`.gitignore` + §7). Hardcoded sequences in `ReferenceWatcherTest` give the
-   same coverage without the files.
-
-   **Precision guards added (always-on, style-independent):** the Russian `глав`/`стих` keyword
-   detectors now require a whole grammatical ending (not any prefix), so `стихотворение`/`главное`
-   no longer fire; `семья`-forms are rejected as numerals (collided with `семь`=7); bare cardinal
-   `один`/`one` ("one verse") is treated as filler so it can't bind to sticky — the EN form matters
-   because the translation track is fed through the same watcher. Finally, **ultra-short single-token
-   aliases (≤2 chars: `so`→Zeph, `re`/`ap`→Rev, `ge`, `ex`…) no longer match in the watcher** — they
-   are typed-input abbreviations that fired constantly on translated prose and hijacked the sticky
-   book; multi-word aliases (always ≥3 chars with a space) are kept.
-
-   **Music precision gate:** `ReferenceWatcher.process(..., isMusic)` skips detection (and leaves
-   sticky untouched) when the STT `speech_type` is `Music` — sung lyrics quote scripture as lyrics,
-   not as references. Wired through `DetectionEngine` (`UtteranceState.speechType`) and
-   `SttSocketClient` (`speech_type` from the live payload); replayed from the `speech_type` column in
-   `DbReplayTest`. Toggle `Config.suppressDuringMusic` (default on; independent of the level chip).
-   No-op on the two folded-in services (no sung-reference rows) — forward-looking guard.
-
-   **Aggressiveness-gated recall (rides the OFF/CONSERVATIVE/BALANCED/AGGRESSIVE chip):**
-   `Config.normalizeStt` (Cyrillic `э→е` before book resolution; BALANCED+) and
-   `Config.inferBookAtEnd` (book named *after* its numbers attaches to them; AGGRESSIVE only).
-2. **Synthetic stress corpus generator** — programmatic rapid-fire chains, STT-corrupted book names
+1. **Synthetic stress corpus generator** — programmatic rapid-fire chains, STT-corrupted book names
    (edit-distance noise), dropped keywords. Precision negatives exist; the generator does not yet.
-3. **Cadence-adaptive sticky TTL** — auto-shrink on many distinct book changes/min. Mechanism only;
+2. **Cadence-adaptive sticky TTL** — auto-shrink on many distinct book changes/min. Mechanism only;
    needs real multi-speaker data to set the rate thresholds.
-4. **Fuzzy book matching** — `resolveStem` is prefix-only (edit distance 0). Raising tolerance for
+3. **Fuzzy book matching** — `resolveStem` is prefix-only (edit distance 0). Raising tolerance for
    STT typos (e.g. `Ивангелие`) needs more typo examples before it's safe.
-5. **Per-language alias scoping** — still the full merged table. Short-alias false positives are now
+4. **Per-language alias scoping** — still the full merged table. Short-alias false positives are now
    mitigated two ways: structurally (a bare book only sets sticky; emission still needs глава/стих or
    a number) **and** by dropping ≤2-char single-token aliases in the watcher (kills `so`/`re`/`ap`
    drift on translated prose). Still open: **3-char aliases that are real words** (`job`→Job, `am`,
    `ru`) can fire on the EN track; quantify with backups before extending the block or doing full
    per-language tagging.
-6. **Confidence-tiered auto-follow gating on the client** — engine already emits per-tier confidence
+5. **Confidence-tiered auto-follow gating on the client** — engine already emits per-tier confidence
    + source; `BibleViewModel`/`autoFollow` could restrict auto-navigation to tier-1/corroborated.
-7. **Continuation engine windowing** — `ContinuationEngine` still scores against the whole growing
+6. **Continuation engine windowing** — `ContinuationEngine` still scores against the whole growing
    transcript (overlap shrinks on long utterances). Window it, or retire it now that the sticky
    watcher covers most continuation cases.
-8. **Reverse all-terms path** — `searchAllTerms` requires every window token in one verse, so it
+7. **Reverse all-terms path** — `searchAllTerms` requires every window token in one verse, so it
    rarely fires; consider relevance-windowing the query.
-9. **`pickTranslation` hardcodes `RUS_RST`/`ENG_KJV`** ids before the language-match fallback —
+8. **`pickTranslation` hardcodes `RUS_RST`/`ENG_KJV`** ids before the language-match fallback —
    fragile if the loaded SPB ids/codes differ.
-10. **Known limitations** to revisit with data: ambiguous numbered books with no number spoken
-    (bare "Коринфянам"/"Петра"); short genitive stems excluded by the min-4 rule (e.g. "Луки").
+9. **Known limitations** to revisit with data: ambiguous numbered books with no number spoken
+   (bare "Коринфянам"/"Петра"); short genitive stems excluded by the min-4 rule (e.g. "Луки").
 
 ### Known-miss examples (kept as future fixtures)
-`1-е послание Петра …` (book word between "1" and "Петра") — **FIXED** in the 2026-06-25 round
-(epistle ordinal resolution; see top section + `ReferenceWatcherTest`). Still open: bare `Коринфянам 12`
-(1 vs 2 Cor, no number spoken); `Луки 22` (stem "лук" < min length). All low-frequency; revisit when
-backups quantify them.
+Open: bare `Коринфянам 12` (1 vs 2 Cor, no number spoken); `Луки 22` (stem "лук" < min length). All
+low-frequency; revisit when backups quantify them. (The *marked* epistle case `1-е послание Петра …`
+is handled — `[1-е/2-е/Первое] Послание Иоанна|Петра` resolves to the epistle via the ordinal +
+«послание»/«письмо» marker look-back in `ReferenceWatcher`; covered by `ReferenceWatcherTest`.)
 
 From the two folded-in services (locked as fixtures; fix gated/deferred):
 - **`эфесянам`** (STT writes `э`, alias is `ефесянам`) — handled by `Config.normalizeStt` (BALANCED+);
@@ -413,12 +345,12 @@ engine's `detection-log`. They must use the **same** numbering or correct detect
   expose numbering bugs: **Psalms** (and check Joel/Malachi/3 John).
 
 ### 8e. Other matching foot-guns (engine side)
-- `pickTranslation` hardcodes `RUS_RST`/`ENG_KJV` ids before the language fallback (§6 #9) — fragile if
+- `pickTranslation` hardcodes `RUS_RST`/`ENG_KJV` ids before the language fallback (§6 #8) — fragile if
   the loaded SPB ids differ. A wrong translation pick can yield a verse in the wrong numbering.
 - Cross-language alias noise: short single-token aliases (`so`, `re`, `ap`, and 3-char real words like
-  `job`/`am`/`ru`) can fire on the English translation track and hijack the sticky book (§6 #5).
+  `job`/`am`/`ru`) can fire on the English translation track and hijack the sticky book (§6 #4).
 - Bare ambiguous numbered books with no number spoken (`Коринфянам`, `Петра`) still can't pick 1 vs 2
-  (§6 #10) — distinct from the now-fixed *marked* epistle case (`Послание … Петра`).
+  (§6 #9) — distinct from the now-fixed *marked* epistle case (`Послание … Петра`).
 
 ---
 
