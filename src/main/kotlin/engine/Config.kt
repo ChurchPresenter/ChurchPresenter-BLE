@@ -14,6 +14,9 @@ object Config {
     // A reverse (BM25) hit must also share at least this much word-overlap with what was actually
     // spoken (transcript + translation), so a match on a single rare token can't fire on its own.
     var reverseMinAgreement = 0.15
+    // Min fraction of a verse's words that must appear in a track (transcript / translation) for that
+    // track to be marked as corroborating the detection (the per-chip transcription/translation icons).
+    var trackCoverageMin = 0.4
     val continuationTimeoutMs = 30_000L
     val dedupWindow = 32
     // Suppress an identical reference only within this window (time-based, replaces the old fixed

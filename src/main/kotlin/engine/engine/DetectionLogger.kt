@@ -72,6 +72,10 @@ object DetectionLogger {
                 else append("\"segmentId\":null,")
                 if (event.sttStartTime != null) append("\"sttStartTime\":").append(event.sttStartTime).append(',')
                 else append("\"sttStartTime\":null,")
+                // Which STT track(s) corroborated this detection: transcription / translation / both.
+                append("\"tracks\":[")
+                append(event.tracks.joinToString(",") { "\"" + esc(it) + "\"" })
+                append("],")
                 append("\"transcript\":\"").append(esc(transcript)).append("\",")
                 append("\"translation\":\"").append(esc(translation)).append('"')
                 append('}')

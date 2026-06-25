@@ -36,6 +36,9 @@ data class ScriptureEvent(
     // doesn't provide it (older schema).
     val segmentId: String? = null,
     val sttStartTime: Double? = null,
+    // Which STT track(s) corroborate this detection — subset of {"transcription","translation"}.
+    // A corroboration/confidence signal for the UI: both present = strongest.
+    val tracks: List<String> = emptyList(),
 )
 
 class DetectionEngine(private val translations: List<EngineTranslation>) {
@@ -154,14 +157,43 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
     }
 
     private fun logged(state: UtteranceState, events: List<ScriptureEvent>): List<ScriptureEvent> {
-        // Stamp the triggering STT segment onto every emitted event here — the single funnel for all
-        // detection paths — so both the broadcast and the detection log carry the correlation key.
-        val stamped =
-            if (state.segmentId != null || state.sttStartTime != null)
-                events.map { it.copy(segmentId = state.segmentId, sttStartTime = state.sttStartTime) }
-            else events
+        // Stamp the triggering STT segment + per-track corroboration onto every emitted event here —
+        // the single funnel for all detection paths — so both the broadcast and the detection log
+        // carry the correlation key and the transcription/translation markers.
+        val now = System.currentTimeMillis()
+        val stamped = events.map {
+            it.copy(
+                segmentId = state.segmentId ?: it.segmentId,
+                sttStartTime = state.sttStartTime ?: it.sttStartTime,
+                tracks = corroboratingTracks(state, it, now),
+            )
+        }
         for (e in stamped) DetectionLogger.log(state.transcript, state.translation, e)
         return stamped
+    }
+
+    /** The STT track(s) that support [event] — verse text read in the track, or its citation spoken there. */
+    private fun corroboratingTracks(state: UtteranceState, event: ScriptureEvent, now: Long): List<String> {
+        val tracks = ArrayList<String>(2)
+        if (trackSupports(state.transcript, event, now)) tracks.add("transcription")
+        if (trackSupports(state.translation, event, now)) tracks.add("translation")
+        return tracks
+    }
+
+    private fun trackSupports(trackText: String, event: ScriptureEvent, now: Long): Boolean {
+        if (trackText.isBlank()) return false
+        // Verse being read in this track (covers reverse / continuation / explicit-after-read).
+        if (AgreementScorer.coverage(event.verseText, trackText) >= Config.trackCoverageMin) return true
+        // Citation spoken in this track — a throwaway sticky so we don't disturb the live context
+        // (covers explicit references before the verse itself is read aloud).
+        val sticky = object : ReferenceWatcher.Sticky {
+            override var watchBook: Int? = null
+            override var watchChapter: Int? = null
+            override var watchExpiresAt: Long = 0L
+        }
+        return ReferenceWatcher.process(trackText, sticky, now).any {
+            it.bookNum == event.reference.bookId && it.chapter == event.reference.chapter
+        }
     }
 
     private fun buildRefEvent(state: UtteranceState, ref: ReferenceWatcher.Ref): ScriptureEvent? {
