@@ -14,8 +14,12 @@ import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import java.io.File
 
-/** Handle to a running engine instance; call [stop] to shut it (and its STT client) down. */
-class EngineHandle internal constructor(private val stopFn: () -> Unit) {
+/**
+ * Handle to a running engine instance; call [stop] to shut it (and its STT client) down.
+ * [boundPort] is the port the WS server actually bound (may differ from the requested one when that
+ * was taken) — local clients connect there.
+ */
+class EngineHandle internal constructor(val boundPort: Int, private val stopFn: () -> Unit) {
     fun stop() { runCatching { stopFn() } }
 }
 
@@ -32,7 +36,6 @@ object EngineServer {
         }
         Config.bibleRoot = bibleRoot
         Config.sttServerUrl = sttUrl
-        Config.outputPort = port
 
         // Book names are registered from every SPB (cheap header scan), but full verse data + BM25
         // index are built only for the requested bibles (ChurchPresenter's primary + secondary).
@@ -48,23 +51,30 @@ object EngineServer {
         DetectionLogger.path = File(bibleRoot, "detection-log.jsonl").absolutePath
         val broadcaster = Broadcaster()
 
-        // Bind the WS server BEFORE connecting the STT client. If the port is already taken (e.g. it
-        // collides with the Companion server) the bind throws here — we must surface it and bail,
-        // rather than leak an STT client that keeps detecting while no client can ever reach us.
-        val server = try {
-            embeddedServer(Netty, port = port) {
-                install(WebSockets) {
-                    pingPeriodMillis = 30_000
-                    timeoutMillis = 60_000
-                    maxFrameSize = Long.MAX_VALUE
-                    masking = false
-                }
-                routing { bibleEngineSocket(detectionEngine, broadcaster) }
-            }.start(wait = false)
-        } catch (e: Exception) {
-            System.err.println("bible-engine: failed to bind WS server on port $port — ${e.message}")
+        // Bind the WS server BEFORE connecting the STT client (so we never leak a detecting-but-
+        // unreachable STT client). The requested port may be taken — most commonly because it
+        // collides with ChurchPresenter's Companion server — so try a small range and use the first
+        // free port. Local clients learn the actual port via EngineHandle.boundPort.
+        val bound = (port until port + 10).firstNotNullOfOrNull { p ->
+            runCatching {
+                embeddedServer(Netty, port = p) {
+                    install(WebSockets) {
+                        pingPeriodMillis = 30_000
+                        timeoutMillis = 60_000
+                        maxFrameSize = Long.MAX_VALUE
+                        masking = false
+                    }
+                    routing { bibleEngineSocket(detectionEngine, broadcaster) }
+                }.start(wait = false)
+            }.getOrNull()?.let { it to p }
+        }
+        if (bound == null) {
+            System.err.println("bible-engine: failed to bind WS server on ports $port..${port + 9}")
             return null
         }
+        val (server, boundPort) = bound
+        if (boundPort != port) System.err.println("bible-engine: port $port busy — bound on $boundPort instead")
+        Config.outputPort = boundPort
 
         val sttClient: SttSocketClient? =
             try {
@@ -76,7 +86,7 @@ object EngineServer {
                 return null
             }
 
-        return EngineHandle {
+        return EngineHandle(boundPort) {
             runCatching { sttClient?.disconnect() }
             runCatching { server.stop(500, 1000) }
         }
