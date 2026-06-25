@@ -99,7 +99,8 @@ object DetectionLogger {
 
     /**
      * A built-but-not-emitted near-miss → `candidate-log-*.jsonl`. [reason] is why it was dropped
-     * ("below-confidence" / "deduped" / "low-agreement"). Training data for confidence tuning.
+     * ("below-confidence" / "low-agreement"). "deduped" repeats are filtered out upstream in
+     * DetectionEngine — they're a held passage repeating, not a tuning signal. Training data for tuning.
      */
     fun logCandidate(transcript: String, translation: String, event: ScriptureEvent, reason: String) {
         val configured = path ?: return

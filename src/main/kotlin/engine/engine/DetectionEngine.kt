@@ -183,6 +183,10 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
      */
     private fun logCandidate(state: UtteranceState, event: ScriptureEvent, reason: String) {
         if (!Config.logCandidates || event.confidence < Config.candidateLogMinConfidence) return
+        // "deduped" rows are correct detections repeating (a held passage), not genuine near-misses —
+        // they swamped the candidate log and carried no tuning signal. Keep only true near-misses
+        // ("below-confidence" / "low-agreement"); real misses are recovered offline against ground truth.
+        if (reason == "deduped") return
         val stamped = stamp(state, event, System.currentTimeMillis())
         DetectionLogger.logCandidate(state.transcript, state.translation, stamped, reason)
     }

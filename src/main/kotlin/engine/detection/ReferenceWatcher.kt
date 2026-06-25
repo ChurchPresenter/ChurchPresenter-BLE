@@ -57,6 +57,20 @@ object ReferenceWatcher {
     // through the same watcher (DetectionEngine combines transcript + translation).
     private val BARE_ONE = setOf("один", "одна", "одно", "одни", "одну", "one")
 
+    // ── Epistle (ordinal) disambiguation ────────────────────────────────────────
+    // "Иоанна" is the Gospel of John (43); "1-е/Первое Послание Иоанна" is the *epistle* 1 John (62).
+    // The plain alias table resolves the spoken name to the gospel, and an intervening «Послание»
+    // breaks the "1 иоанна" greedy multi-token alias — so the epistle was being dropped to the gospel.
+    // When the epistle word «послание»/«письмо» (or an explicit ordinal) precedes one of these forms,
+    // resolve to the epistle instead, with the ordinal (1/2/3) selecting which.
+    private val EPISTLE_MARKER_STEMS = listOf("послани", "письм") // послание/послании/письмо/письме…
+    private val EPISTLE_CONNECTORS = setOf("к", "ко")
+    // Inflected spoken forms of John / Peter that, in an epistle context, mean the epistle.
+    private val JOHN_FORMS = setOf("иоанна", "иоанн", "иоанну", "иоанне")
+    private val PETER_FORMS = setOf("петра", "петру", "петре", "петр", "пётр")
+    // base = canonical id of the 1st epistle, count = number of epistles (John 62/63/64, Peter 60/61).
+    private data class EpistleSpec(val base: Int, val count: Int)
+
     private sealed interface Atom {
         data class Book(val num: Int) : Atom
         object ChapKw : Atom
@@ -118,6 +132,18 @@ object ReferenceWatcher {
         val atoms = ArrayList<Atom>(tokens.size)
         var i = 0
         while (i < tokens.size) {
+            // Epistle disambiguation runs first: "1 Послание Иоанна" → 1 John (62), not the Gospel
+            // (43). The look-back tokens (ordinal / «послание» / «к») were already classified as
+            // Num/Filler, so drop those atoms and emit the resolved epistle book in their place.
+            val epistle = resolveEpistleAt(tokens, i)
+            if (epistle != null) {
+                val (bookNum, back) = epistle
+                repeat(back) { if (atoms.isNotEmpty()) atoms.removeAt(atoms.lastIndex) }
+                atoms.add(Atom.Book(bookNum))
+                i++
+                continue
+            }
+
             // Greedy book match: try 3-, then 2-, then 1-token joins against the alias table.
             var matched = false
             val maxJoin = minOf(3, tokens.size - i)
@@ -171,6 +197,44 @@ object ReferenceWatcher {
         (t.startsWith("глав") && t.substring(4) in CHAP_RU_ENDINGS) || CHAP_KW.any { t.startsWith(it) }
     private fun isVerseKw(t: String): Boolean =
         (t.startsWith("стих") && t.substring(4) in VERSE_RU_ENDINGS) || VERSE_KW.any { t.startsWith(it) }
+
+    private fun isEpistleMarker(t: String): Boolean = EPISTLE_MARKER_STEMS.any { t.startsWith(it) }
+
+    /**
+     * If [tokens]`[i]` is an epistle-ambiguous book name (John/Peter) marked as an epistle by a
+     * preceding «послание»/«письмо» word and/or an explicit ordinal (digit or word), returns the
+     * epistle's canonical book number plus how many preceding tokens the pattern consumed; else null.
+     *
+     *   "1 Послание Иоанна"  → (62, 2)   // 1 John, consuming «послание» + «1»
+     *   "Послание к Петру"   → (60, 2)   // 1 Peter, consuming «к» + «послание»
+     *   "Первое Иоанна"      → (62, 1)   // 1 John, consuming the word ordinal
+     *
+     * A bare "Иоанна"/"Петра" with no marker and no ordinal returns null (left to the alias table /
+     * gospel reading), so non-epistle prose can't be hijacked.
+     */
+    private fun resolveEpistleAt(tokens: List<String>, i: Int): Pair<Int, Int>? {
+        val spec = when (tokens[i]) {
+            in JOHN_FORMS -> EpistleSpec(62, 3)
+            in PETER_FORMS -> EpistleSpec(60, 2)
+            else -> return null
+        }
+        var j = i - 1
+        var back = 0
+        // optional «к»/«ко» connector directly before the book ("послание к иоанну")
+        if (j >= 0 && tokens[j] in EPISTLE_CONNECTORS) { j--; back++ }
+        // optional epistle marker word
+        var marker = false
+        if (j >= 0 && isEpistleMarker(tokens[j])) { marker = true; j--; back++ }
+        // optional ordinal (digit or word) selecting which epistle
+        var ord: Int? = null
+        if (j >= 0) {
+            val n = NumberWords.parseToken(tokens[j])
+            if (n != null && n in 1..spec.count) { ord = n; back++ }
+        }
+        // Require positive evidence of an epistle: the marker word or an explicit ordinal.
+        if (!marker && ord == null) return null
+        return (spec.base + (ord ?: 1) - 1) to back
+    }
 
     // ── interpretation ──────────────────────────────────────────────────────────
 

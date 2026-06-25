@@ -27,6 +27,13 @@ object Config {
     // Suppress an identical reference only within this window (time-based, replaces the old fixed
     // count-only window) so a passage read again later can re-fire.
     var dedupTtlMs = 45_000L
+    // Re-emission churn control for a held passage. A reference already showing only re-emits as an
+    // "updated" event when its confidence moves by at least [reEmitMinDelta] AND at least
+    // [reEmitCooldownMs] has passed since the last (new or updated) emission. The reverse-lookup
+    // confidence oscillates as the window slides, which previously re-presented the same verse many
+    // times (Иакова 2:19 fired 11× in one service); these bound it to at most once per cooldown.
+    var reEmitMinDelta = 0.15
+    var reEmitCooldownMs = 10_000L
     var minConfidenceEmit = 0.4
     val bm25K1 = 1.5
     val bm25B = 0.75

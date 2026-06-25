@@ -1,5 +1,6 @@
 package engine
 
+import engine.detection.BookResolver
 import engine.detection.ReferenceWatcher
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -218,6 +219,65 @@ class ReferenceWatcherTest {
     @Test fun `bare один стих and этот стих do not emit (f1#662, #665)`() {
         assertNoEmit("И хочу прочитать один стих.")
         assertNoEmit("этот стих для меня был чужой, непонятный.")
+    }
+
+    // ── Epistle (ordinal) disambiguation — 1/2/3 John, 1/2 Peter (2026-06-25 study §2) ──────────
+
+    @Test fun `Послание Иоанна resolves to the epistle not the gospel (seg#3)`() {
+        // The real seg#3: "1 Послание Иоанна, 4 глава, 3 стиха" → 1 John 4:3 (62), NOT John 4:3 (43).
+        val r = run("1 Послание Иоанна, 4 глава, 3 стиха.").single()
+        assertEquals(Triple(62, 4, 3), r.triple())
+    }
+
+    @Test fun `bare Послание Иоанна defaults to 1 John`() {
+        val r = run("Послание Иоанна, 4 глава, 15 стих.").single()
+        assertEquals(Triple(62, 4, 15), r.triple())
+    }
+
+    @Test fun `2-е Послание Иоанна selects the second epistle`() {
+        val r = run("2 Послание Иоанна, 1 глава, 6 стих.").single()
+        assertEquals(Triple(63, 1, 6), r.triple())
+    }
+
+    @Test fun `digit-adjacent 1 Иоанна locks canonical id 62`() {
+        // "1-е Иоанна 4:15" — digit adjacency already joins via the alias; lock the canonical id so
+        // the CP-side positional map (62 → 1 John index 61) has a trustworthy ground truth.
+        val r = run("1-е Иоанна 4:15.").single()
+        assertEquals(62, r.bookNum)
+    }
+
+    @Test fun `Первое Иоанна word-ordinal resolves to the epistle`() {
+        val r = run("Первое Иоанна, 4 глава, 15 стих.").single()
+        assertEquals(Triple(62, 4, 15), r.triple())
+    }
+
+    @Test fun `Послание Петра resolves to 1 Peter`() {
+        val r = run("Послание Петра, 1 глава, 3 стих.").single()
+        assertEquals(Triple(60, 1, 3), r.triple())
+    }
+
+    @Test fun `Второе Петра word-ordinal selects 2 Peter`() {
+        val r = run("Второе Петра, 1 глава, 3 стих.").single()
+        assertEquals(Triple(61, 1, 3), r.triple())
+    }
+
+    @Test fun `gospel of John is preserved without an epistle marker`() {
+        // "Евангелие от Иоанна, 3 глава, 16 стих" must stay the Gospel (43), not become an epistle.
+        val r = run("Евангелие от Иоанна, 3 глава, 16 стих.").single()
+        assertEquals(Triple(43, 3, 16), r.triple())
+    }
+
+    @Test fun `bare Иоанна with no marker stays the gospel`() {
+        val r = run("Иоанна, 3 глава, 16 стих.").single()
+        assertEquals(Triple(43, 3, 16), r.triple())
+    }
+
+    @Test fun `engine canonical names confirm the 1 John mapping (study §1 ground truth)`() {
+        // Closes the CP-side loop: the engine emits canonical id 62 and 62 is "1 John" in canonical
+        // order, so CP's positional map (index = id - 1 = 61) lands on 1 John.
+        assertEquals("1 John", BookResolver.canonicalName(62))
+        assertEquals("James", BookResolver.canonicalName(59))
+        assertEquals("2 Corinthians", BookResolver.canonicalName(47))
     }
 
     // ── Music precision gate ─────────────────────────────────────────────────────
