@@ -15,7 +15,7 @@ private val json = Json {
 fun Route.bibleEngineSocket(engine: DetectionEngine, broadcaster: Broadcaster) {
     webSocket("/bible-engine") {
         val remoteAddr = call.request.local.remoteHost
-        println("WebSocket connected: $remoteAddr")
+        if (Config.verboseLog) println("WebSocket connected: $remoteAddr")
         broadcaster.register(this)
         try {
             for (frame in incoming) {
@@ -50,10 +50,10 @@ fun Route.bibleEngineSocket(engine: DetectionEngine, broadcaster: Broadcaster) {
                 }
             }
         } catch (e: Exception) {
-            println("WebSocket error ($remoteAddr): ${e.message}")
+            if (Config.verboseLog) println("WebSocket error ($remoteAddr): ${e.message}")
         } finally {
             broadcaster.unregister(this)
-            println("WebSocket disconnected: $remoteAddr")
+            if (Config.verboseLog) println("WebSocket disconnected: $remoteAddr")
         }
     }
 }

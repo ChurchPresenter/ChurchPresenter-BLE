@@ -5,6 +5,11 @@ object Config {
     var sttServerUrl: String = ""
     var outputPort: Int = 8765
 
+    // Routine lifecycle chatter (STT/WS connect+disconnect) is OFF by default so the host app's
+    // terminal stays quiet; enable with -Dengine.verbose=true for connectivity debugging. Genuine
+    // errors (System.err — bind/parse/connection failures) are always printed regardless.
+    var verboseLog: Boolean = System.getProperty("engine.verbose")?.toBooleanStrictOrNull() ?: false
+
     // Optional BM25 allow-list. Empty = index every SPB found in the bible folder (the default);
     // set specific ids only to cap memory when many large translations are present.
     val defaultTranslations = emptyList<String>()

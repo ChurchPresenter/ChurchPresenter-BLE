@@ -1,5 +1,6 @@
 package engine.socket
 
+import engine.Config
 import engine.engine.DetectionEngine
 import io.socket.client.IO
 import io.socket.client.Socket
@@ -21,10 +22,10 @@ class SttSocketClient(
         socket = IO.socket(serverUrl, options)
 
         socket.on(Socket.EVENT_CONNECT) {
-            println("Connected to STT server: $serverUrl")
+            if (Config.verboseLog) println("Connected to STT server: $serverUrl")
         }
         socket.on(Socket.EVENT_DISCONNECT) {
-            println("Disconnected from STT server")
+            if (Config.verboseLog) println("Disconnected from STT server")
         }
         socket.on(Socket.EVENT_CONNECT_ERROR) { args ->
             System.err.println("STT server connection error: ${args.firstOrNull()}")
