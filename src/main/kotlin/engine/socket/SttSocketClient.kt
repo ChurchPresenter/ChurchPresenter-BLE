@@ -37,7 +37,8 @@ class SttSocketClient(
         socket.on("transcription_update") { args ->
             extractTranscriptText(args)?.let { text ->
                 val events = detectionEngine.processTranscription(
-                    "live", text, extractSpeechType(args), extractSegmentId(args), extractStartTime(args)
+                    "live", text, extractSpeechType(args), extractSegmentId(args), extractStartTime(args),
+                    extractSessionId(args)
                 )
                 runBlocking { for (e in events) broadcaster.broadcast(e) }
             }
@@ -46,7 +47,8 @@ class SttSocketClient(
         socket.on("translation_update") { args ->
             extractTranslationText(args)?.let { text ->
                 val events = detectionEngine.processTranslation(
-                    "live", text, extractSpeechType(args), extractSegmentId(args), extractStartTime(args)
+                    "live", text, extractSpeechType(args), extractSegmentId(args), extractStartTime(args),
+                    extractSessionId(args)
                 )
                 runBlocking { for (e in events) broadcaster.broadcast(e) }
             }
@@ -79,6 +81,16 @@ class SttSocketClient(
             segments.optJSONObject(segments.length() - 1)?.let { segmentIdOf(it)?.let { id -> return id } }
         }
         return segmentIdOf(payload)
+    }
+
+    // Stable per-service session id (e.g. the STT db base name "2026-06-25_120605" or a UUID), emitted
+    // as a top-level `session_id` in every payload. Ties all three artifacts (STT db, engine
+    // detection-log, CP live-references) with an exact join and keys the engine/CP log filenames so a
+    // CP restart re-attaches to the same files. Null until the STT app ships the field — both loggers
+    // then fall back to their process-start timestamp (zero behaviour change).
+    private fun extractSessionId(args: Array<Any>): String? {
+        val payload = args.firstOrNull() as? JSONObject ?: return null
+        return payload.optString("session_id", "").trim().takeIf { it.isNotEmpty() }
     }
 
     // `segment_id` (string) if present, else `str(id)` from the integer PK; null if neither exists.

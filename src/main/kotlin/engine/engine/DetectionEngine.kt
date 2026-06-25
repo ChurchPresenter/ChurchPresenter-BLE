@@ -36,6 +36,9 @@ data class ScriptureEvent(
     // doesn't provide it (older schema).
     val segmentId: String? = null,
     val sttStartTime: Double? = null,
+    // Stable per-service session id from STT — the exact join key shared by the STT db, the detection
+    // log and the CP live-references log. Null when the STT stream doesn't provide it (older schema).
+    val sessionId: String? = null,
     // Which STT track(s) corroborate this detection — subset of {"transcription","translation"}.
     // A corroboration/confidence signal for the UI: both present = strongest.
     val tracks: List<String> = emptyList(),
@@ -65,12 +68,14 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         speechType: String? = null,
         segmentId: String? = null,
         startTime: Double? = null,
+        sessionId: String? = null,
     ): List<ScriptureEvent> {
         val state = utterances.getOrPut(id) { UtteranceState(id) }
         state.transcript = text
         if (speechType != null) state.speechType = speechType
         if (segmentId != null) state.segmentId = segmentId
         if (startTime != null) state.sttStartTime = startTime
+        applySessionId(state, sessionId)
         state.updatedAt = System.currentTimeMillis()
         return runDetection(state)
     }
@@ -81,14 +86,24 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         speechType: String? = null,
         segmentId: String? = null,
         startTime: Double? = null,
+        sessionId: String? = null,
     ): List<ScriptureEvent> {
         val state = utterances.getOrPut(id) { UtteranceState(id) }
         state.translation = text
         if (speechType != null) state.speechType = speechType
         if (segmentId != null) state.segmentId = segmentId
         if (startTime != null) state.sttStartTime = startTime
+        applySessionId(state, sessionId)
         state.updatedAt = System.currentTimeMillis()
         return runDetection(state)
+    }
+
+    /** Stores the STT session id on the utterance and points the detection log at the matching file. */
+    private fun applySessionId(state: UtteranceState, sessionId: String?) {
+        if (sessionId != null) {
+            state.sessionId = sessionId
+            DetectionLogger.sessionId = sessionId
+        }
     }
 
     private fun isMusic(speechType: String?): Boolean = speechType.equals("Music", ignoreCase = true)
@@ -206,6 +221,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         event.copy(
             segmentId = state.segmentId ?: event.segmentId,
             sttStartTime = state.sttStartTime ?: event.sttStartTime,
+            sessionId = state.sessionId ?: event.sessionId,
             tracks = corroboratingTracks(state, event, now),
             speechType = state.speechType ?: event.speechType,
             stickyBook = state.watchBook ?: event.stickyBook,

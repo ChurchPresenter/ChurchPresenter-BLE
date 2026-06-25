@@ -26,6 +26,10 @@ data class UtteranceState(
     // stream provides them.
     var segmentId: String? = null,
     var sttStartTime: Double? = null,
+    // Stable per-service session id from STT (db base name or UUID). Stamped onto every emitted
+    // detection so all three artifacts (STT db, detection-log, live-references) share an exact join
+    // key, and used to key the detection-log filename. Null until the STT stream provides it.
+    var sessionId: String? = null,
     // ── Sticky reference context (ReferenceWatcher) ──
     // The most recently announced book + chapter, carried across utterances so a later bare
     // "N стих" (verse-by-verse reading) resolves against it. Expires after Config.stickyTtlMs.

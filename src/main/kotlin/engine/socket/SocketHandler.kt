@@ -41,11 +41,12 @@ fun Route.bibleEngineSocket(engine: DetectionEngine, broadcaster: Broadcaster) {
                     }
                     "transcription_update" -> {
                         if (id.isBlank()) continue
-                        engine.processTranscription(id, text).forEach { broadcaster.broadcast(it) }
+                        // CP→engine WS path carries no STT session id — only the STT socket path does.
+                        engine.processTranscription(id, text, sessionId = null).forEach { broadcaster.broadcast(it) }
                     }
                     "translation_update" -> {
                         if (id.isBlank()) continue
-                        engine.processTranslation(id, text).forEach { broadcaster.broadcast(it) }
+                        engine.processTranslation(id, text, sessionId = null).forEach { broadcaster.broadcast(it) }
                     }
                 }
             }

@@ -8,22 +8,33 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Appends every emitted detection — with the triggering transcript/translation — to a per-run
- * timestamped JSONL file, turning each live service into labeled-ish regression data without manual
- * annotation. Disabled unless [path] is set (EngineServer/BibleEngineClient point it at the log
- * dir). The configured [path]'s parent + base name `detection-log` is rolled into
- * `detection-log-YYYY-MM-DD_HH-mm-ss.jsonl`, where the timestamp is frozen at process start so
- * separate app starts never combine into one file. Files older than [MAX_AGE_DAYS] are pruned once
- * per process for size control. Best-effort; never throws into the detection path.
+ * Appends every emitted detection — with the triggering transcript/translation — to a session-keyed
+ * JSONL file, turning each live service into labeled-ish regression data without manual annotation.
+ * Disabled unless [path] is set (EngineServer/BibleEngineClient point it at the log dir).
+ *
+ * The configured [path]'s parent + base name `detection-log` is rolled into
+ * `detection-log-<sessionId>.jsonl` when STT has supplied a stable [sessionId], otherwise into
+ * `detection-log-YYYY-MM-DD_HH-mm-ss.jsonl` (the process-start timestamp). The file is chosen
+ * **lazily per write**, so a ChurchPresenter restart mid-service re-attaches to the SAME
+ * session-keyed file and appends (no fragmentation), and a fresh `sessionId` (STT restart mid-CP)
+ * rolls subsequent writes to a new file. Each distinct file gets exactly one session header.
+ *
+ * Files older than [MAX_AGE_DAYS] are pruned once per process for size control. Best-effort; never
+ * throws into the detection path.
  *
  * [logCandidate] writes built-but-not-emitted near-misses to a parallel `candidate-log-*.jsonl`
- * (same rotation/cleanup) for confidence tuning — gated by `Config.logCandidates`.
+ * (same naming/rotation/cleanup) for confidence tuning — gated by `Config.logCandidates`.
  *
  * One JSON object per line: {ts, ref, book, chapter, verse, source, confidence, emitted, reason?,
- * segmentId, sttStartTime, tracks, transcript, translation}.
+ * sessionId, segmentId, sttStartTime, tracks, transcript, translation}.
  */
 object DetectionLogger {
     @Volatile var path: String? = null
+
+    // Stable per-service session id from STT (db base name or UUID). Null until the STT stream ships
+    // it; the filename then falls back to [runStamp] (zero behaviour change). Set lazily by the
+    // detection engine, so the filename is bound only at first write — by which time STT has connected.
+    @Volatile var sessionId: String? = null
 
     private const val MAX_AGE_DAYS = 30L
     private const val BASE_PREFIX = "detection-log-"
@@ -31,17 +42,30 @@ object DetectionLogger {
 
     private val lock = Any()
     private val cleanedUp = AtomicBoolean(false)
-    private val sessionWritten = AtomicBoolean(false)
+    // Files (by absolute path) that have already had their one session header written. A set rather
+    // than a single flag, so each session-keyed file gets exactly one header — appending to an
+    // existing file (CP restart) just continues it, and a new session id starts a fresh header.
+    private val headerWritten = java.util.Collections.synchronizedSet(HashSet<String>())
 
     // Frozen at first use (≈ process start), down to the second so quick restarts never share a file.
     private val runStamp: String =
         LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"))
 
-    /** Per-run sibling of the configured [path], e.g. `<parent>/<prefix>2026-06-24_14-30-05.jsonl`. */
+    /**
+     * Session-keyed sibling of the configured [path]: `<parent>/<prefix><sessionId>.jsonl` when STT
+     * has supplied a session id, else `<parent>/<prefix><runStamp>.jsonl`. Chosen per call so a
+     * late-arriving session id (or a mid-service STT restart) lands in the right file.
+     */
     private fun datedFile(configured: String, prefix: String): File {
         val parent = File(configured).absoluteFile.parentFile ?: File(".")
-        return File(parent, "$prefix$runStamp.jsonl")
+        val suffix = sessionId?.let { sanitize(it) } ?: runStamp
+        return File(parent, "$prefix$suffix.jsonl")
     }
+
+    /** Keeps `[A-Za-z0-9._-]`, replacing anything else with `_`, so any session id is filename-safe. */
+    private fun sanitize(raw: String): String =
+        raw.map { if (it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '.' || it == '_' || it == '-') it else '_' }
+            .joinToString("")
 
     /** Deletes dated detection + candidate logs older than [MAX_AGE_DAYS] in [dir]. Once per process. */
     private fun cleanupOldLogsOnce(dir: File?) {
@@ -70,16 +94,23 @@ object DetectionLogger {
     }
 
     /**
-     * Writes a one-time per-run session header — the Bibles, level and thresholds that produced this
-     * service's rows — as the first line of the detection log, so results tie back to the exact config.
+     * Writes a one-time per-file session header — the session id, Bibles, level and thresholds that
+     * produced this service's rows — as the first line of each detection-log file, so results tie back
+     * to the exact config. Keyed per file so a CP restart appending to an existing session file does
+     * NOT add a second header, while a new session id (new file) gets its own.
      */
     private fun ensureSessionHeader(target: File) {
-        if (!sessionWritten.compareAndSet(false, true)) return
+        if (!headerWritten.add(target.absolutePath)) return
+        // A CP restart re-attaches to an existing session-keyed file that already carries its header —
+        // don't write a second one, just append the new run's rows after the existing content.
+        if (target.exists() && target.length() > 0L) return
         runCatching {
             val line = buildString {
                 append('{')
                 append("\"type\":\"session\",")
                 append("\"ts\":\"").append(Instant.now()).append("\",")
+                if (sessionId != null) append("\"sessionId\":\"").append(esc(sessionId!!)).append("\",")
+                else append("\"sessionId\":null,")
                 append("\"bibles\":[").append(Config.loadedBibles.joinToString(",") { "\"" + esc(it) + "\"" }).append("],")
                 append("\"level\":\"").append(esc(Config.level)).append("\",")
                 append("\"minConfidenceEmit\":").append(Config.minConfidenceEmit).append(',')
@@ -141,6 +172,10 @@ object DetectionLogger {
             append("\"agreement\":").append(AgreementScorer.score(event.verseText, transcript, translation)).append(',')
             append("\"coverageTranscript\":").append(AgreementScorer.coverage(event.verseText, transcript)).append(',')
             append("\"coverageTranslation\":").append(AgreementScorer.coverage(event.verseText, translation)).append(',')
+            // Stable per-service session id — the exact join key tying this row to the STT db and the
+            // CP live-references log. Null when STT didn't provide it (pre-session_id data).
+            if (event.sessionId != null) append("\"sessionId\":\"").append(esc(event.sessionId)).append("\",")
+            else append("\"sessionId\":null,")
             // Clock-free correlation key: ties this row to the STT transcript and the operator's
             // go-live log without any wall-clock/NTP. Null when STT didn't provide it.
             if (event.segmentId != null) append("\"segmentId\":\"").append(esc(event.segmentId)).append("\",")

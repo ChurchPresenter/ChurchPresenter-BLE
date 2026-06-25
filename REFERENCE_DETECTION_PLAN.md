@@ -419,3 +419,80 @@ engine's `detection-log`. They must use the **same** numbering or correct detect
   `job`/`am`/`ru`) can fire on the English translation track and hijack the sticky book (§6 #5).
 - Bare ambiguous numbered books with no number spoken (`Коринфянам`, `Петра`) still can't pick 1 vs 2
   (§6 #10) — distinct from the now-fixed *marked* epistle case (`Послание … Петра`).
+
+---
+
+## 9. Matching training artifacts (db ↔ jsonl) — make analysis rock solid
+
+One service produces three artifacts written by three components at three different moments, and in
+the field **STT and ChurchPresenter can start 30+ minutes apart** (possibly on different machines):
+
+| Artifact | Written by | Filename key (current) |
+|---|---|---|
+| `<sessionId>.db` | STT app | STT session id |
+| `detection-log-<sessionId>.jsonl` | engine `DetectionLogger` | STT session id (lazy; fallback to engine-start stamp) |
+| `live-references-<sessionId>.jsonl` | CP `TrainingDataLogger` | STT session id (lazy; fallback to CP-start stamp) |
+
+**`session_id` is now the primary key (implemented).** STT emits a stable `session_id` in every
+socket payload; the engine and CP both **key their log filenames by it** and **stamp it into the
+session header and every row**. Binding is **lazy — at first write** — so the start order doesn't
+matter: the engine only starts when STT connects and neither logger writes until the first
+detection / go-live, by which time `session_id` is always known. If the field is absent (STT hasn't
+shipped it yet), both loggers **fall back to their process-start timestamp** — identical to the old
+behaviour, so analysis still works on pre-`session_id` data via the content/epoch heuristics below.
+
+So **do NOT match on filename or wall-clock** for legacy data, and **`segment_id` can't identify a
+run** (it restarts at ~1 every session). `candidate-log`/`suggestion-outcomes` are written **on
+demand** — their absence for a run is normal, not missing data.
+
+### What to match on (invariant + session-unique)
+1. **db ↔ detection-log — transcript content (strong key).** Every logged detection was triggered by a
+   db row, so for the true db nearly all detection `transcript`s contain one of its row `text`s. Clock-
+   and machine-independent. (The reverse — db rows inside detections — is naturally low since most db
+   rows never fire; score the **detection→db** direction.)
+2. **detection-log ↔ live-references — same process, same clock.** CP hosts the in-process engine, so
+   these share the **same wall clock** and the **same `segment_id` space** → match by time-window
+   overlap + segment-id overlap.
+3. **Cross-check: STT session epoch** = `wall_clock − session_relative_time`, constant across a
+   session: db `ts_ms − start_time*1000` vs detection-log `ts − sttStartTime*1000`. Agreement
+   corroborates; a content match with a large epoch gap flags **inter-machine clock skew** (matching
+   still valid — just don't trust raw timestamps for that run).
+
+### Tool
+`tools/match_training_data.py <dir>` implements the above and prints the matched groups with a
+confidence (HIGH ≥70% of detections grounded in the db). Verified on real data: it pairs
+`…_120605.db` ↔ `detection-log-…_12-04-48` ↔ `live-references-…_12-05-24` at HIGH, ignores the
+unrelated `11-18` set, and flags a detection-log whose db isn't present.
+
+### ChurchPresenter restart mid-session (no fragmentation with `session_id`)
+If ChurchPresenter restarts while the STT server keeps the **same** session:
+- **db** — continuous (STT is separate); `segment_id` keeps incrementing. Nothing lost.
+- **detection-log / live-references** — because both files are now **keyed by the STT `session_id`**
+  and bound **lazily at first write**, the restarted engine + CP **re-open the SAME files and append**.
+  The session header is written **once per file** (a restart that re-attaches to an existing file skips
+  the header and just continues it), so **one STT session = one detection-log + one live-references**.
+  No more fragmentation.
+- **Legacy / no-`session_id` fallback:** when the field is absent the old `runStamp`-named behaviour
+  applies, so a restart opens **new** timestamped files — **one STT session spans 2+ fragments**.
+  Pre-restart files are already flushed line-by-line → not lost. The matcher still groups these and
+  prints `‼ ChurchPresenter RESTART detected — this STT session spans N CP runs`, discriminating real
+  restarts from repeated-sermon look-alikes via the **STT session epoch** (`wall − session_relative_time`,
+  identical across a true restart, within `EPOCH_TOL_S`).
+
+### STT restart mid-CP (engine rolls to a new file)
+If the **STT** server restarts while ChurchPresenter keeps running, STT issues a **new** `session_id`.
+The engine's `DetectionLogger` (filename chosen per write) **rolls subsequent writes to the new
+`detection-log-<newId>.jsonl`**, and CP's `live-references` follows on the next detection-driven
+go-live — correctly splitting the two STT sessions into separate, individually-joinable file sets.
+
+### Matching is now an exact key join (implemented)
+With `session_id` keying filenames + headers + rows, matching is a trivial 1:1 join.
+`match_training_data.py` **already prefers an explicit `session_id`** when both sides carry one (db
+`session_id` column + log header/row `sessionId`), so it needs **no code change** — it picks up the
+key automatically. The content/epoch heuristics above remain as the **fallback path for pre-
+`session_id` data**.
+
+> **STT side (handoff — separate dev):** STT must (a) emit `session_id` in every socket payload (db
+> base name like `2026-06-25_120605`, or a UUID) and (b) **add a `session_id` column to the db** storing
+> the same value. The matcher already reads that column when present. The engine/CP sides are landed and
+> are regression-safe to ship before STT (they fall back to timestamp names until the field arrives).
