@@ -280,6 +280,34 @@ class ReferenceWatcherTest {
         assertEquals("2 Corinthians", BookResolver.canonicalName(47))
     }
 
+    // ── New true-positives folded in from service3 (2026-06-25, new STT schema) ─────────────────
+
+    @Test fun `первое послание Иоанна word-ordinal plus marker resolves to 1 John (f3#3)`() {
+        // Real service3 row 3: "первое послание Иоанна, 4 глава, 3 стиха" → 1 John 4:3 (62), not John (43).
+        val r = run("первое послание Иоанна, 4 глава, 3 стиха.").single()
+        assertEquals(Triple(62, 4, 3), r.triple())
+        assertEquals(1, r.tier)
+    }
+
+    @Test fun `послание Иакова вторая глава с N по M range (f3#11)`() {
+        // Real service3 row 11: word-ordinal chapter «вторая» + «с 19 по 22» range → James 2:19-22.
+        val r = run("Это послание Иакова, вторая глава, с 19 по 22 стих.").single()
+        assertEquals(Triple(59, 2, 19), r.triple())
+        assertEquals(22, r.verseEnd)
+    }
+
+    @Test fun `Матфея 10 with глава N стих tail (f3#36)`() {
+        // Real service3 row 36: "Матфея 10, глава 32 стих." → Matthew 10:32.
+        val r = run("Матфея 10, глава 32 стих.")
+        assertTrue(r.any { it.triple() == Triple(40, 10, 32) }, "expected Matthew 10:32, got $r")
+    }
+
+    @Test fun `counting ordinal next to a book name does not fabricate an epistle (f3#52, #56)`() {
+        // Real service3 rows 52/56: "первое условие … Иоанн" — «первое» counts a condition, not a
+        // book; with no «послание» marker and no глава/стих number it must NOT become 1 John / John 1.
+        assertNoEmit("Вот понимаете, то есть первое условие здесь Иоанн ставит для того, чтобы мы возрастали в вере.")
+    }
+
     // ── Music precision gate ─────────────────────────────────────────────────────
 
     @Test fun `music segment is suppressed and does not seed sticky`() {

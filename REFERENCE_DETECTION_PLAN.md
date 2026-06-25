@@ -139,7 +139,7 @@ chip; optionally auto-estimate.
    from them): Matthew 28:18, 1 Peter 3:21, Romans 10:9-10, Proverbs 30:5, Ephesians 4:5,
    Mark 16:15-16, the **Daniel 6 verse-by-verse chain**, etc. Feed each row in order, assert
    emitted refs.
-   - **Folded in (two archived services).** Two more backups added as permanent coverage —
+   - **Folded in (three archived services).** Three backups added as permanent coverage —
      replayed by `DbReplayTest` (sqlite-jdbc, skips when `-Dreplay.db` unset) and locked as
      hardcoded sequences in `ReferenceWatcherTest`. Curated expected table in §7. The replay feeds
      the **combined transcript + translation** per row (mirroring `DetectionEngine.runDetection`),
@@ -152,10 +152,14 @@ chip; optionally auto-estimate.
      the source-language path in the unit tests.
      New true-positive patterns: word-ordinal chapter (`шестая глава`), `с N по M` verse range,
      split book→chapter→verse with instrumental `стихом`, verse-before-chapter order
-     (`14 стих 3 главы`), `Четвертая глава` → `С N стиха` sticky.
+     (`14 стих 3 главы`), `Четвертая глава` → `С N стиха` sticky. service3 (new STT schema) adds
+     real-data **epistle word-ordinal + marker** (`первое послание Иоанна 4:3` → 1 John, not John),
+     word-ordinal chapter + range together (`послание Иакова, вторая глава, с 19 по 22`), and the
+     `Матфея 10, глава N стих` tail order.
      New precision traps now guarded: `стихотворение`/`стихотворения` (poem),
      `главное`/`главный`, `глава семьи` (`семьи` collided with стем for 7), bare `стихи`,
-     bare `один стих`/`этот стих`.
+     bare `один стих`/`этот стих`, and counting-ordinal-next-to-a-book prose
+     (`первое условие … Иоанн` must not fabricate 1 John).
 2. **Synthetic stress corpus** for styles the files lack — assert **precision stays high**
    (precision is what must generalize): rapid-fire book→book→bare-verse chains;
    single-passage sermons; split-across-rows with filler; STT-corrupted book names (inject
@@ -250,14 +254,16 @@ From the two folded-in services (locked as fixtures; fix gated/deferred):
 
 Service `.db` backups used for analysis live on the maintainer's machine only; they are **not in the
 repo** and their filenames/paths are deliberately not recorded here (they contain full congregation
-transcripts). Two backups are folded into the regression set, referenced by neutral fixture ids:
+transcripts). Three backups are folded into the regression set, referenced by neutral fixture ids:
 
 - **service1** — ~751 rows.
 - **service2** — ~802 rows.
+- **service3** — ~147 rows (new STT schema: `session_id`, `segment_id`, `ts_ms`, `words_json`).
 
 Curated expected table (fixture, row id → expected ref), replayed by `DbReplayTest`
-(`-Dreplay.db=<path> -Dreplay.fixture=service1|service2`) and locked in `ReferenceWatcherTest`. The
-pattern column describes the case; the actual transcript text is not reproduced here.
+(`-Dreplay.db=<path> -Dreplay.fixture=service1|service2|service3`) and locked in
+`ReferenceWatcherTest`. The pattern column describes the case; the actual transcript text is not
+reproduced here.
 
 | Fixture | Row | Pattern | Expected | Tier |
 |---------|-----|---------|----------|------|
@@ -269,9 +275,12 @@ pattern column describes the case; the actual transcript text is not reproduced 
 | service2 | 3 | explicit book + chapter + verse | Col 3:21 | 1 |
 | service2 | 631→633 | book via translation track + verse-before-chapter | Joshua 3:14 | 3 |
 | service2 | 660→661 | sticky book+chapter, then "from verse N" | Joshua 4:5 | 3 |
+| service3 | 3 | epistle word-ordinal + «послание» marker | 1 John 4:3 | 1 |
+| service3 | 11 | word-ordinal chapter «вторая» + «с N по M» range | James 2:19-22 | 1 |
+| service3 | 36 | book + chapter num, then «глава N стих» tail | Matt 10:32 | 1 |
 
 Precision negatives (must emit nothing): service1 #332/#356/#401/#662/#665/#701,
-service2 #12/#623/#624/#712.
+service2 #12/#623/#624/#712, service3 #52/#56/#68/#72 (bare «Иоанн» / "первое условие … Иоанн").
 
 `DbReplayTest` asserts every curated row **exactly** (book + chapter + verse[+range]). This holds
 because the replay feeds the combined transcript + translation with each row's real `timestamp`
@@ -417,12 +426,14 @@ The engine's `DetectionLogger` (filename chosen per write) **rolls subsequent wr
 `detection-log-<newId>.jsonl`**, and CP's `live-references` follows on the next detection-driven
 go-live — correctly splitting the two STT sessions into separate, individually-joinable file sets.
 
-### Matching is now an exact key join (implemented)
+### Matching is now an exact key join (implemented + verified on real data)
 With `session_id` keying filenames + headers + rows, matching is a trivial 1:1 join.
 `match_training_data.py` **already prefers an explicit `session_id`** when both sides carry one (db
 `session_id` column + log header/row `sessionId`), so it needs **no code change** — it picks up the
 key automatically. The content/epoch heuristics above remain as the **fallback path for pre-
-`session_id` data**.
+`session_id` data**. **Verified on a real session_id-enabled service** (the service3 backup): the
+matcher reports the db ↔ detection-log ↔ live-references group as `EXPLICIT session_id` (100%
+grounded), confirming the end-to-end join.
 
 > **STT side (handoff — separate dev):** STT must (a) emit `session_id` in every socket payload (db
 > base name like `2026-06-25_120605`, or a UUID) and (b) **add a `session_id` column to the db** storing

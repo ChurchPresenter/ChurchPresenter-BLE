@@ -59,11 +59,13 @@ class DbReplayTest {
             633 to Expect(6, 3, 14),   // verse-before-chapter; book resolved via translation track
             661 to Expect(6, 4, 5),    // sticky book+chapter, then "from verse N"
         ),
-        // service3 (~715 rows, new STT schema). Curate true-positive rows from the local backup and
-        // list them here (id → Expect), mirroring the recipe above. Left empty until the rows are
-        // curated against the local `.db` — the test then skips this fixture rather than asserting
-        // fabricated ids. Add matching clean-form cases in ReferenceWatcherTest as they are curated.
-        "service3" to emptyMap(),
+        // service3 (~147 rows, new STT schema: session_id/segment_id/ts_ms/words_json). Self-contained
+        // rows that resolve standalone (the live engine also emitted all three).
+        "service3" to mapOf(
+            3 to Expect(62, 4, 3),       // epistle word-ordinal + «послание»: "первое послание Иоанна, 4 глава, 3 стиха"
+            11 to Expect(59, 2, 19, 22), // word-ordinal chapter «вторая» + «с 19 по 22» range
+            36 to Expect(40, 10, 32),    // book + chapter num, then «глава 32 стих» tail
+        ),
     )
 
     // One service2 row is intentionally not asserted: the translation's trailing number is misread as
@@ -74,8 +76,9 @@ class DbReplayTest {
     private val negativeByFixture: Map<String, Set<Int>> = mapOf(
         "service1" to setOf(332, 356, 401, 662, 665, 701),
         "service2" to setOf(12, 623, 624, 712),
-        // service3 precision negatives — curate must-emit-nothing rows from the local backup here.
-        "service3" to emptySet(),
+        // service3 precision negatives: bare book mention / counting-ordinal prose, no real ref.
+        // 52,56 — "первое условие … Иоанн" must NOT fabricate 1 John / John 1; 68,72 — bare «Иоанн».
+        "service3" to setOf(52, 56, 68, 72),
     )
 
     private val tsFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
