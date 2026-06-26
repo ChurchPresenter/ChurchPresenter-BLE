@@ -24,9 +24,19 @@ Given a live transcript like *"for God so loved the world"*, it emits:
   "verseText": "For God so loved the world, that he gave his only begotten Son...",
   "confidence": 0.90,
   "matchType": "reverse",
-  "translation": "KJV"
+  "translation": "KJV",
+  "tracks": ["transcription", "translation"],
+  "segmentId": "1287",
+  "sttStartTime": 12.48,
+  "sessionId": "2026-06-25_170206"
 }
 ```
+
+The last four fields are **corroboration + correlation metadata** (all best-effort; emitted as `null` / `[]` when the STT stream doesn't provide them):
+
+- **`tracks`** — which STT track(s) supported the hit: `"transcription"`, `"translation"`, or both. Both present = strongest corroboration; the client can surface it as a confidence signal.
+- **`segmentId`** / **`sttStartTime`** — the STT segment id and its session-relative start that triggered the detection. A clock-free key tying the event back to the exact transcript row (no NTP/wall-clock needed).
+- **`sessionId`** — the stable per-service id STT stamps on every payload (e.g. the db base name or a UUID). It ties the STT db, the engine `detection-log` and the client's go-live log together with an exact join, and keys the `detection-log` filename (see [Training & correlation logging](#training--correlation-logging)).
 
 The transcript and its translation are fed together (see [Pipeline](#pipeline)), then detection runs in three stages in priority order:
 
@@ -61,7 +71,7 @@ On first run, `bible-engine.properties` is created next to the JAR (or in the wo
 ## Architecture
 
 ```
-                      Socket.IO: transcription_update + translation_update (+ speech_type)
+          Socket.IO: transcription_update + translation_update (+ speech_type, segment_id, session_id)
    [STT server] ───────────────────────────────────────────────────────────────► [BLE]
         ▲                                                                            │
         │ Socket.IO (its own captions)                          scripture.* events  │  ws://…/bible-engine
@@ -138,6 +148,16 @@ output.port=8765
 | `--bible-root /path/to/bibles` | Use this Bible folder |
 | `--port 8765` | WebSocket output server port |
 
+### Runtime flags (JVM system properties)
+
+Pass with `-D…` (e.g. `./gradlew run -Dengine.verbose=true`, or `java -Dengine.verbose=true -jar …`):
+
+| Property | Default | Effect |
+|---|---|---|
+| `engine.verbose` | `false` | Log STT/WebSocket connect+disconnect chatter. Genuine errors (bind/parse/connection) always print regardless. |
+| `engine.logCandidates` | `true` | Write built-but-not-emitted near-misses to `candidate-log-*.jsonl` for tuning; set `false` to disable. |
+| `bible.root` | — | Bible folder (same as `--bible-root` / `bible.root` in the properties file). |
+
 ## Input modes
 
 ### Socket.IO mode (alongside ChurchPresenter)
@@ -178,6 +198,21 @@ Both input modes broadcast to all connected WebSocket clients.
 | `scripture.updated` | Same reference re-scored with higher confidence |
 | `scripture.continuation` | Speaker has moved to the next verse |
 
+Every event also carries the corroboration/correlation metadata described under [What it does](#what-it-does) (`tracks`, `segmentId`, `sttStartTime`, `sessionId`).
+
+## Training & correlation logging
+
+`DetectionLogger` appends one JSON line per emission — the reference plus the triggering transcript/translation and the metadata above — turning each live service into labeled-ish regression data with no manual annotation. It's best-effort and never throws into the detection path; disabled until a host (ChurchPresenter / `EngineServer`) points it at a log directory.
+
+**Session-keyed filenames.** When STT supplies a `sessionId`, the log is written to `detection-log-<sessionId>.jsonl`; otherwise it falls back to a process-start timestamp (`detection-log-YYYY-MM-DD_HH-mm-ss.jsonl`). The target is chosen **lazily, per write**, so:
+
+- a **client restart mid-service** re-attaches to the *same* session-keyed file and appends — no fragmentation (the one-time session header is written only once per file);
+- an **STT restart mid-service** issues a new `sessionId`, so the engine rolls to a fresh `detection-log-<newId>.jsonl`.
+
+Each file opens with a `{"type":"session", …}` header (the bibles, level, thresholds and `sessionId` that produced its rows). Near-miss candidates go to a parallel `candidate-log-*.jsonl` for threshold tuning (gated by `Config.logCandidates`); files older than 30 days are pruned once per process.
+
+Because all three artifacts of one service — the STT `.db`, the engine `detection-log` and the client's go-live log — share the same `sessionId`, they join 1:1. `tools/match_training_data.py` resolves that join (and falls back to content/epoch matching for pre-`sessionId` data). See `REFERENCE_DETECTION_PLAN.md` §9.
+
 ## Language support
 
 ### BM25 reverse lookup
@@ -210,10 +245,14 @@ Edit `src/main/kotlin/engine/Config.kt`:
 |---|---|---|
 | `defaultTranslations` | `[]` (empty = index all) | Optional BM25 allow-list; ChurchPresenter passes its primary + secondary bibles instead |
 | `reverseMinScoreRatio` | `2.0` | Min top/second BM25 score ratio for partial-match fallback |
+| `reverseMinAgreement` | `0.15` | Min word-overlap a reverse hit must share with the spoken text to fire |
+| `trackCoverageMin` | `0.4` | Min fraction of a verse's words in a track for it to count as corroborating (`tracks` markers) |
 | `continuationTimeoutMs` | `30000` | ms of silence before continuation tracking resets |
 | `dedupTtlMs` | `45000` | Time window that suppresses a repeat of the same reference |
+| `reEmitMinDelta` / `reEmitCooldownMs` | `0.15` / `10000` | A held passage only re-emits as `scripture.updated` on this confidence move AND after this cooldown (churn control) |
 | `minConfidenceEmit` | `0.4` | Minimum confidence to emit any event |
 | `stickyTtlMs` | `180000` | How long an announced book+chapter stays sticky (varies by level) |
+| `suppressDuringMusic` | `true` | Skip detection on `speech_type = Music` segments (independent of the level) |
 | `bm25K1` / `bm25B` | `1.5` / `0.75` | BM25 tuning parameters |
 
 Most thresholds are also set as a group by the aggressiveness level — see [Aggressiveness levels](#aggressiveness-levels).
@@ -241,13 +280,32 @@ src/main/kotlin/engine/
 │   ├── UtteranceState.kt    # Per-utterance transcript + translation + sticky context
 │   ├── AgreementScorer.kt   # Word-overlap scorer (validates reverse + sticky)
 │   ├── Stabilizer.kt        # Time-based dedup + confidence gate
-│   ├── DetectionLogger.kt   # Appends each emission + triggering text to detection-log.jsonl
+│   ├── DetectionLogger.kt   # Appends each emission + triggering text to detection-log-<sessionId>.jsonl
 │   └── DetectionEngine.kt   # Orchestrates the pipeline (watcher → reverse → continuation)
 └── socket/
     ├── Broadcaster.kt       # Thread-safe registry of connected WebSocket sessions
     ├── SocketHandler.kt     # Ktor WebSocket route (input + output)
     └── SttSocketClient.kt   # Socket.IO client for STT server input (transcription + translation)
 ```
+
+Alongside the source:
+
+- **`REFERENCE_DETECTION_PLAN.md`** — the detector's design reference: stateful watcher, robustness across speaking/transcription styles, validation strategy, numbering gotchas, and the `.db` ↔ jsonl artifact matching (§9).
+- **`tools/match_training_data.py`** — joins a service's `.db`, `detection-log` and `live-references` (by `sessionId`, with a content/epoch fallback) for offline precision/recall analysis.
+
+## Tests
+
+```bash
+./gradlew test                      # unit suite (ReferenceWatcherTest, etc.) — always runs
+```
+
+`DbReplayTest` replays an archived service `.db` to lock real-world regressions. The `.db` files are **never committed** (full congregation transcripts); the test skips unless you point it at a local backup:
+
+```bash
+./gradlew test -Dreplay.db="/path/to/service.db" -Dreplay.fixture=service1
+```
+
+See `REFERENCE_DETECTION_PLAN.md` §5 ("how to fold in the next backup") for curating new fixtures.
 
 ## SPB format
 
