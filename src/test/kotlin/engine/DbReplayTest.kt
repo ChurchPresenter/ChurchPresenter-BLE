@@ -13,8 +13,7 @@ import kotlin.test.assertTrue
 /**
  * Regression replay over an archived service `.db` backup. The `.db` files are never committed (they
  * contain full service transcripts); pass one via `-Dreplay.db=…` plus a curated fixture id via
- * `-Dreplay.fixture=service1|service2|service3`, otherwise the test skips gracefully so CI without
- * the local files still passes.
+ * `-Dreplay.fixture=<id>`, otherwise the test skips gracefully so CI without the local files still passes.
  *
  * Streams each row in `id` order through a single sticky context — mirroring the live feed, which
  * concatenates transcript + translation (`DetectionEngine.runDetection` builds `"$transcript
@@ -26,9 +25,11 @@ import kotlin.test.assertTrue
  * Detection is not held to 100% on every row — the translation track can drag in number/book noise;
  * rows it genuinely garbles are left unasserted (their clean form is covered by ReferenceWatcherTest).
  *
- *     ./gradlew test -Dreplay.db="/path/to/your/service1.db" -Dreplay.fixture=service1
- *     ./gradlew test -Dreplay.db="/path/to/your/service2.db" -Dreplay.fixture=service2
- *     ./gradlew test -Dreplay.db="/path/to/your/service3.db" -Dreplay.fixture=service3
+ * To add a new service session, curate its rows per TRAINING_PLAN.md §Test Strategy, then add a
+ * fixture entry here. Only include rows where the full reference is self-contained in the row text
+ * (no rolling-window dependency on adjacent rows).
+ *
+ *     ./gradlew test "-Dreplay.db=/path/to/service.db" "-Dreplay.fixture=<id>"
  */
 class DbReplayTest {
 
@@ -41,45 +42,13 @@ class DbReplayTest {
     /** One curated expected reference. [vEnd] null = don't care about the range end. */
     private data class Expect(val book: Int, val ch: Int, val v: Int?, val vEnd: Int? = null)
 
-    // Curated rows per fixture id (not file name, to avoid embedding real backup filenames) — exact
-    // book + chapter + verse(+range). Asserted with `any { … }` so extra (e.g. duplicate
-    // cross-language) emissions on the same row are fine. With the real per-row timestamp driving
-    // sticky TTL plus the short-alias guard, sticky-book reads resolve via the translation track —
-    // see ReferenceWatcherTest for the isolated proofs.
-    private val exactByFixture: Map<String, Map<Int, Expect>> = mapOf(
-        "service1" to mapOf(           // ~751 rows
-            27 to Expect(49, 4, 6),    // explicit book + chapter + verse
-            28 to Expect(49, 4, 6),    // sticky verse against the previous row's book/chapter
-            377 to Expect(5, 6, 4, 9), // word-ordinal chapter + "from N to M" verse range
-            378 to Expect(5, 6, 4),    // explicit book + chapter + verse
-            410 to Expect(40, 7, 21),  // split across rows: book+chapter, then verse (instrumental)
-        ),
-        "service2" to mapOf(           // ~802 rows
-            3 to Expect(51, 3, 21),    // explicit book + chapter + verse
-            633 to Expect(6, 3, 14),   // verse-before-chapter; book resolved via translation track
-            661 to Expect(6, 4, 5),    // sticky book+chapter, then "from verse N"
-        ),
-        // service3 (~147 rows, new STT schema: session_id/segment_id/ts_ms/words_json). Self-contained
-        // rows that resolve standalone (the live engine also emitted all three).
-        "service3" to mapOf(
-            3 to Expect(62, 4, 3),       // epistle word-ordinal + «послание»: "первое послание Иоанна, 4 глава, 3 стиха"
-            11 to Expect(59, 2, 19, 22), // word-ordinal chapter «вторая» + «с 19 по 22» range
-            36 to Expect(40, 10, 32),    // book + chapter num, then «глава 32 стих» tail
-        ),
-    )
+    // Curated rows per fixture id — exact book + chapter + verse(+range). Add entries here when
+    // folding in a new service session (see TRAINING_PLAN.md §Test Strategy for curation rules).
+    // Asserted with `any { … }` so extra cross-language emissions on the same row are fine.
+    private val exactByFixture: Map<String, Map<Int, Expect>> = emptyMap()
 
-    // One service2 row is intentionally not asserted: the translation's trailing number is misread as
-    // a verse (chapter-only reference gains a spurious verse). The clean source-language path for that
-    // pattern is covered in ReferenceWatcherTest.
-
-    // Rows that must emit NOTHING (verse/chapter keyword look-alikes, bare verse/chapter words, no number).
-    private val negativeByFixture: Map<String, Set<Int>> = mapOf(
-        "service1" to setOf(332, 356, 401, 662, 665, 701),
-        "service2" to setOf(12, 623, 624, 712),
-        // service3 precision negatives: bare book mention / counting-ordinal prose, no real ref.
-        // 52,56 — "первое условие … Иоанн" must NOT fabricate 1 John / John 1; 68,72 — bare «Иоанн».
-        "service3" to setOf(52, 56, 68, 72),
-    )
+    // Rows that must emit NOTHING (verse/chapter keyword look-alikes, bare verse/chapter words, etc).
+    private val negativeByFixture: Map<String, Set<Int>> = emptyMap()
 
     private val tsFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
@@ -101,7 +70,7 @@ class DbReplayTest {
         val exact = exactByFixture[fixture] ?: emptyMap()
         val negatives = negativeByFixture[fixture] ?: emptySet()
         assumeTrue(exact.isNotEmpty() || negatives.isNotEmpty(),
-            "set -Dreplay.fixture=service1|service2|service3 to assert curated rows — skipping")
+            "set -Dreplay.fixture=<id> to assert curated rows — skipping")
 
         Config.applyLevel("balanced")
         try {

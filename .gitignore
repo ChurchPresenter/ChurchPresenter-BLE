@@ -2,3 +2,5 @@
 build/
 *.class
 .kotlin/
+__pycache__/
+*.pyc

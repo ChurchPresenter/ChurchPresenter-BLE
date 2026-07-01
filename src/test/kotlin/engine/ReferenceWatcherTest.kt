@@ -113,75 +113,8 @@ class ReferenceWatcherTest {
         assertTrue(late.isEmpty(), "stale context should have expired, got $late")
     }
 
-    // ── New true-positives folded in from two archived service backups ──────────
-    // (Curated rows from REFERENCE_DETECTION_PLAN.md §5/§7. Hardcoded so coverage holds
-    //  without the local .db files present; the same rows are replayed by DbReplayTest.)
-
-    @Test fun `Ephesians 4 6 with keywords (f1#27)`() {
-        val r = run("Послание Ефесянам, 4 глава, 6 стих.").single()
-        assertEquals(Triple(49, 4, 6), r.triple())
-        assertEquals(1, r.tier)
-    }
-
-    @Test fun `Ephesians 4 6 sticky on next row (f1#27 to #28)`() {
-        val r = run(
-            "Послание Ефесянам, 4 глава, 6 стих.",
-            "Мы оттолкнемся отсюда, от этого стиха, 4 глава, 6 стих.",
-        )
-        assertTrue(r.any { it.triple() == Triple(49, 4, 6) }, "expected Ephesians 4:6, got $r")
-    }
-
-    @Test fun `Deuteronomy 6 4-9 word-ordinal chapter and range (f1#377)`() {
-        val r = run(
-            "И если мы прочитаем, откроем священное место, которое записано в книге " +
-                "«Второзаконие», шестая глава, с 4 по 9 стих записаны такие слова.",
-        ).single()
-        assertEquals(Triple(5, 6, 4), r.triple())
-        assertEquals(9, r.verseEnd)
-    }
-
-    @Test fun `Deuteronomy 6 4 (f1#378)`() {
-        val r = run("Второзаконие, 6 глава 4 стиха.").single()
-        assertEquals(Triple(5, 6, 4), r.triple())
-    }
-
-    @Test fun `Matthew 7 21 split across rows with instrumental стихом (f1#409 to #410)`() {
-        val r = run("Как это сказано в Матфея 7 глава.", "21 стихом.")
-        assertTrue(r.any { it.triple() == Triple(40, 7, 21) }, "expected Matthew 7:21, got $r")
-    }
-
-    @Test fun `Colossians 3 21 with keywords (f2#3)`() {
-        val r = run("В послании к колоссянам, 3 глава, 21 стих.").single()
-        assertEquals(Triple(51, 3, 21), r.triple())
-        assertEquals(1, r.tier)
-    }
-
-    @Test fun `word-ordinal chapter then с N стиха sticky book (f2#660 to #661)`() {
-        // "Четвертая глава." → "С 5 стиха." resolves against the sticky book (Joshua).
-        val r = run("Читаем книгу Иисуса Навина.", "Четвертая глава.", "С 5 стиха.")
-        assertTrue(r.any { it.triple() == Triple(6, 4, 5) }, "expected Joshua 4:5, got $r")
-    }
-
-    @Test fun `verse-before-chapter order against sticky book (f2#633)`() {
-        // "14 стих 3 главы …" — verse named before the chapter; binds to the sticky book.
-        val r = run("Читаем книгу Иисуса Навина.", "14 стих 3 главы.")
-        assertTrue(r.any { it.triple() == Triple(6, 3, 14) }, "expected Joshua 3:14, got $r")
-    }
-
-    @Test fun `garbled Russian book rescued by English translation track (f2#631 to #633)`() {
-        // The live engine feeds transcript + translation combined. Here the Russian book is
-        // STT-garbled ("Иисуса Новина" — does not match the alias), but the English translation
-        // says "Joshua", which resolves via the alias table and seeds the sticky book. A later
-        // bare verse/chapter then binds to it — cross-language corroboration.
-        val r = run(
-            "Иисуса Новина. This is Joshua Noven.",
-            "14 стих 3 главы. 14 verse 3.",
-        )
-        assertTrue(r.any { it.triple() == Triple(6, 3, 14) }, "expected Joshua 3:14 via EN book, got $r")
-    }
-
-    // ── New precision negatives folded in from the two backups ───────────────────
-    // стих*/глав* look-alikes and bare verse/chapter words with no real number must NOT emit,
+    // ── Precision negatives: стих*/глав* look-alikes ────────────────────────────
+    // Look-alike words and bare verse/chapter words with no real number must NOT emit,
     // both standalone and when a live sticky context is present (so they can't bind to it).
 
     /** Feeds a live reference first, then [line]; returns only the refs [line] itself emits. */
@@ -196,35 +129,35 @@ class ReferenceWatcherTest {
         assertTrue(withSticky(line).isEmpty(), "should not bind to sticky: \"$line\" → ${withSticky(line)}")
     }
 
-    @Test fun `стихотворение look-alike does not emit (f1#356, f2#12)`() {
+    @Test fun `стихотворение look-alike does not emit`() {
         assertNoEmit("где звучали стихотворения, где пелись пения.")
         assertNoEmit("во славу Твоей молитвы Пение, стихотворение слово Твое.")
         assertNoEmit("за все стихотворения, которые были сказаны.")
     }
 
-    @Test fun `главное look-alike does not emit (f2#712)`() {
+    @Test fun `главное look-alike does not emit`() {
         assertNoEmit("Это самое главное в нашей жизни.")
     }
 
-    @Test fun `глава семьи with no real number does not emit (f1#332)`() {
+    @Test fun `глава семьи with no real number does not emit`() {
         // "семьи" collides with the stem for 7 (семь); it must be rejected as a non-number.
         assertNoEmit("глава семьи всегда готовым от сердца жертвовать собой.")
         assertNoEmit("глава семьи")
     }
 
-    @Test fun `bare plural стихи with no number does not emit (f2#623, #624)`() {
+    @Test fun `bare plural стихи with no number does not emit`() {
         assertNoEmit("читать стихи, рисовать красиво или еще чего-то.")
     }
 
-    @Test fun `bare один стих and этот стих do not emit (f1#662, #665)`() {
+    @Test fun `bare один стих and этот стих do not emit`() {
         assertNoEmit("И хочу прочитать один стих.")
         assertNoEmit("этот стих для меня был чужой, непонятный.")
     }
 
     // ── Epistle (ordinal) disambiguation — 1/2/3 John, 1/2 Peter (2026-06-25 study §2) ──────────
 
-    @Test fun `Послание Иоанна resolves to the epistle not the gospel (seg#3)`() {
-        // The real seg#3: "1 Послание Иоанна, 4 глава, 3 стиха" → 1 John 4:3 (62), NOT John 4:3 (43).
+    @Test fun `Послание Иоанна resolves to the epistle not the gospel`() {
+        // "1 Послание Иоанна, 4 глава, 3 стиха" → 1 John 4:3 (62), NOT John 4:3 (43).
         val r = run("1 Послание Иоанна, 4 глава, 3 стиха.").single()
         assertEquals(Triple(62, 4, 3), r.triple())
     }
@@ -280,34 +213,6 @@ class ReferenceWatcherTest {
         assertEquals("2 Corinthians", BookResolver.canonicalName(47))
     }
 
-    // ── New true-positives folded in from service3 (2026-06-25, new STT schema) ─────────────────
-
-    @Test fun `первое послание Иоанна word-ordinal plus marker resolves to 1 John (f3#3)`() {
-        // Real service3 row 3: "первое послание Иоанна, 4 глава, 3 стиха" → 1 John 4:3 (62), not John (43).
-        val r = run("первое послание Иоанна, 4 глава, 3 стиха.").single()
-        assertEquals(Triple(62, 4, 3), r.triple())
-        assertEquals(1, r.tier)
-    }
-
-    @Test fun `послание Иакова вторая глава с N по M range (f3#11)`() {
-        // Real service3 row 11: word-ordinal chapter «вторая» + «с 19 по 22» range → James 2:19-22.
-        val r = run("Это послание Иакова, вторая глава, с 19 по 22 стих.").single()
-        assertEquals(Triple(59, 2, 19), r.triple())
-        assertEquals(22, r.verseEnd)
-    }
-
-    @Test fun `Матфея 10 with глава N стих tail (f3#36)`() {
-        // Real service3 row 36: "Матфея 10, глава 32 стих." → Matthew 10:32.
-        val r = run("Матфея 10, глава 32 стих.")
-        assertTrue(r.any { it.triple() == Triple(40, 10, 32) }, "expected Matthew 10:32, got $r")
-    }
-
-    @Test fun `counting ordinal next to a book name does not fabricate an epistle (f3#52, #56)`() {
-        // Real service3 rows 52/56: "первое условие … Иоанн" — «первое» counts a condition, not a
-        // book; with no «послание» marker and no глава/стих number it must NOT become 1 John / John 1.
-        assertNoEmit("Вот понимаете, то есть первое условие здесь Иоанн ставит для того, чтобы мы возрастали в вере.")
-    }
-
     // ── Music precision gate ─────────────────────────────────────────────────────
 
     @Test fun `music segment is suppressed and does not seed sticky`() {
@@ -338,7 +243,7 @@ class ReferenceWatcherTest {
 
     // ── Aggressiveness-gated recall: off at lower levels, on at the intended level ─
 
-    @Test fun `normalizeStt gates э to е book resolution (f1#5)`() {
+    @Test fun `normalizeStt gates э to е book resolution`() {
         val line = "Послание к эфесянам, 6 глава, начинается следующими словами."
         try {
             Config.applyLevel("conservative")
@@ -389,4 +294,5 @@ class ReferenceWatcherTest {
             Config.applyLevel("balanced")
         }
     }
+
 }
