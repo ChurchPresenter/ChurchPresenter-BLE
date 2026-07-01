@@ -3,6 +3,7 @@ package engine
 import engine.bible.SpbLoader
 import engine.detection.BookResolver
 import engine.detection.ExplicitParser
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -13,28 +14,42 @@ class SpbLoaderTest {
 
     companion object {
         init {
-            BookResolver.register(SpbLoader.scanAllBookManifests())
+            // Discover the bible root from ChurchPresenter's settings; skip if not installed.
+            val root = AppConfig.discoverBibleRoot()
+            if (!root.isNullOrBlank()) {
+                Config.bibleRoot = root
+                BookResolver.register(SpbLoader.scanAllBookManifests())
+            }
         }
     }
 
     private val translations by lazy { SpbLoader.loadDefaults() }
-    private val kjv by lazy { translations.find { it.id == "ENG_KJV" }!! }
-    private val rst by lazy { translations.find { it.id == "RUS_RST" }!! }
+    private val kjv by lazy { translations.find { it.id == "ENG_KJV" } }
+    private val rst by lazy { translations.find { it.id == "RUS_RST" } }
+
+    private fun requireBibles() = assumeTrue(
+        kjv != null && rst != null,
+        "KJV/RST not found at Config.bibleRoot='${Config.bibleRoot}' — install ChurchPresenter or set bible.root"
+    )
 
     @Test fun `defaults load successfully`() {
+        requireBibles()
         assertTrue(translations.isNotEmpty(), "No translations loaded — check Config.bibleRoot")
     }
 
     @Test fun `KJV loads with verse data`() {
-        assertTrue(kjv.byBCV.size > 31000, "KJV should have 31K+ verses")
+        requireBibles()
+        assertTrue(kjv!!.byBCV.size > 31000, "KJV should have 31K+ verses")
     }
 
     @Test fun `RST loads with verse data`() {
-        assertTrue(rst.byBCV.size > 31000, "RST should have 31K+ verses")
+        requireBibles()
+        assertTrue(rst!!.byBCV.size > 31000, "RST should have 31K+ verses")
     }
 
     @Test fun `John 3 colon 16 KJV`() {
-        val v = kjv.byBCV[Triple(43, 3, 16)]
+        requireBibles()
+        val v = kjv!!.byBCV[Triple(43, 3, 16)]
         assertNotNull(v)
         assertTrue(v.text.contains("God so loved"), "Expected John 3:16 text")
         assertEquals("B043C003V016", v.code)
@@ -42,14 +57,16 @@ class SpbLoaderTest {
     }
 
     @Test fun `Psalm 51 verse 1 KJV`() {
-        val v = kjv.byBCV[Triple(19, 51, 1)]
+        requireBibles()
+        val v = kjv!!.byBCV[Triple(19, 51, 1)]
         assertNotNull(v)
         assertTrue(v.text.lowercase().contains("mercy"), "Expected Psalm 51:1 text")
         assertFalse(v.isHeader)
     }
 
     @Test fun `Psalm 51 verse 1 RST`() {
-        val v = rst.byBCV[Triple(19, 51, 1)]
+        requireBibles()
+        val v = rst!!.byBCV[Triple(19, 51, 1)]
         assertNotNull(v)
         assertFalse(v.isHeader)
         assertEquals(51, v.chapter)
@@ -57,24 +74,29 @@ class SpbLoaderTest {
     }
 
     @Test fun `KJV book manifest includes 66 books`() {
-        assertEquals(66, kjv.books.size)
+        requireBibles()
+        assertEquals(66, kjv!!.books.size)
     }
 
     @Test fun `Hebrew numbering for English`() {
-        assertEquals("hebrew", kjv.numbering)
+        requireBibles()
+        assertEquals("hebrew", kjv!!.numbering)
     }
 
     @Test fun `LXX numbering for Russian`() {
-        assertEquals("lxx", rst.numbering)
+        requireBibles()
+        assertEquals("lxx", rst!!.numbering)
     }
 
     @Test fun `no V000 headers in KJV`() {
-        val headers = kjv.byBCV.values.count { it.isHeader }
+        requireBibles()
+        val headers = kjv!!.byBCV.values.count { it.isHeader }
         assertEquals(0, headers, "KJV should have no V000 superscription entries")
     }
 
     @Test fun `byChapter lookup works`() {
-        val ch3 = kjv.byChapter[Pair(43, 3)]
+        requireBibles()
+        val ch3 = kjv!!.byChapter[Pair(43, 3)]
         assertNotNull(ch3)
         assertTrue(ch3.size >= 36, "John chapter 3 has at least 36 verses")
     }
@@ -90,12 +112,14 @@ class SpbLoaderTest {
     // NOT in the static alias table, so they only work after BookResolver.register()
 
     @Test fun `SPB manifests are scannable`() {
+        requireBibles()
         val names = SpbLoader.scanAllBookManifests()
         // 2 SPB files × 66 books each, with deduplication of any shared names
         assertTrue(names.size >= 66, "Expected at least 66 book name entries across SPB files")
     }
 
     @Test fun `RST SPB form К Римлянам resolves to Romans`() {
+        requireBibles()
         // RST uses "К Римлянам" (not "Римлянам" which is in static aliases)
         val r = ExplicitParser.parse("К Римлянам 8:28")
         assertNotNull(r, "Expected К Римлянам to resolve (registered from RST SPB)")
@@ -105,6 +129,7 @@ class SpbLoaderTest {
     }
 
     @Test fun `RST SPB form Книга Судей resolves to Judges`() {
+        requireBibles()
         // RST uses "Книга Судей" (not "Судей" which is in static aliases)
         val r = ExplicitParser.parse("Книга Судей 4:4")
         assertNotNull(r, "Expected Книга Судей to resolve (registered from RST SPB)")
@@ -114,6 +139,7 @@ class SpbLoaderTest {
     }
 
     @Test fun `RST SPB form 1-е Коринфянам resolves to 1 Corinthians`() {
+        requireBibles()
         // RST uses "1-е Коринфянам" ordinal form (static has "1 Коринфянам")
         val r = ExplicitParser.parse("1-е Коринфянам 13:4")
         assertNotNull(r, "Expected 1-е Коринфянам to resolve (registered from RST SPB)")

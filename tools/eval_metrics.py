@@ -34,18 +34,22 @@ def load_samples(paths: list[str]) -> list[dict]:
 # ── metric computation ────────────────────────────────────────────────────────
 
 def compute(samples: list[dict], label: str) -> dict:
-    tp = [s for s in samples if s["event_type"] == "tp"]
-    fp = [s for s in samples if s["event_type"] == "fp"]
-    fn = [s for s in samples if s["event_type"] == "fn"]
-    prec    = len(tp) / (len(tp) + len(fp)) if (tp or fp) else None
-    rec     = len(tp) / (len(tp) + len(fn)) if (tp or fn) else None
-    lats    = [s["latency_ms"] for s in tp if s.get("latency_ms") is not None]
+    # Skip legacy out-of-scope events (pre-live-ref-centric format)
+    active = [s for s in samples if s["event_type"] != "out-of-scope"]
+    tp  = [s for s in active if s["event_type"] == "tp"]
+    pre = [s for s in active if s["event_type"] == "premature"]
+    fp  = [s for s in active if s["event_type"] == "fp"]
+    fn  = [s for s in active if s["event_type"] == "fn"]
+    n_tp_total = len(tp) + len(pre)   # premature = corrected TP
+    prec    = n_tp_total / (n_tp_total + len(fp)) if (n_tp_total or fp) else None
+    rec     = n_tp_total / (n_tp_total + len(fn)) if (n_tp_total or fn) else None
+    lats    = [s["latency_ms"] for s in tp + pre if s.get("latency_ms") is not None]
     med_lat = statistics.median(lats) if lats else None
     early   = sum(1 for l in lats if l < 0)
     late    = sum(1 for l in lats if l >= 0)
     return {
         "label": label,
-        "tp": len(tp), "fp": len(fp), "fn": len(fn),
+        "tp": len(tp), "premature": len(pre), "fp": len(fp), "fn": len(fn),
         "precision": prec, "recall": rec,
         "median_latency_ms": med_lat,
         "engine_early": early,
@@ -71,6 +75,7 @@ def _fmt(v) -> str:
 COLS = [
     ("label",              "Session",    lambda r: r["label"]),
     ("tp",                 "TP",         lambda r: _fmt(r["tp"])),
+    ("premature",          "Premature",  lambda r: _fmt(r["premature"])),
     ("fp",                 "FP",         lambda r: _fmt(r["fp"])),
     ("fn",                 "FN",         lambda r: _fmt(r["fn"])),
     ("precision",          "Precision",  lambda r: _fmt_pct(r["precision"])),
