@@ -10,8 +10,14 @@ import engine.Config
  *
  * Evidence tiers (consumed by the caller to set confidence / gate auto-follow):
  *   1 FULL    — book + chapter + verse all present in this utterance
- *   2 PARTIAL — book + chapter only
- *   3 STICKY  — verse (or chapter) resolved against the carried context, no book in this utterance
+ *   2 STICKY  — verse resolved against the carried context, no book in this utterance
+ *
+ * A book (and/or chapter) named with no verse yet — either together in one utterance ("1 Corinthians
+ * 11", then a tangent before reading) or split across utterances (a book named now, a bare chapter
+ * named later via the sticky) — primes the sticky context (see [emit]) but never emits a [Ref]: there
+ * is no evidence of *which* verse to show yet, and guessing verse 1 would put a wrong reference on
+ * screen until the real one is read, possibly much later. This is what lets book, chapter, and verse
+ * each resolve independently as they're spoken, rather than requiring one fully-formed phrase.
  *
  * Pure w.r.t. the Bible data — it only resolves book *numbers* via [BookResolver]; the caller looks
  * up verse text. [process] mutates only the sticky fields on the passed sticky holder.
@@ -30,7 +36,7 @@ object ReferenceWatcher {
         val chapter: Int,
         val verseStart: Int?,
         val verseEnd: Int?,
-        val tier: Int,          // 1 FULL, 2 PARTIAL, 3 STICKY
+        val tier: Int,          // 1 FULL, 2 STICKY
     )
 
     // Non-Russian chapter/verse keyword stems use plain prefix matching (low FP risk, no data to
@@ -57,19 +63,44 @@ object ReferenceWatcher {
     // through the same watcher (DetectionEngine combines transcript + translation).
     private val BARE_ONE = setOf("один", "одна", "одно", "одни", "одну", "one")
 
-    // ── Epistle (ordinal) disambiguation ────────────────────────────────────────
-    // "Иоанна" is the Gospel of John (43); "1-е/Первое Послание Иоанна" is the *epistle* 1 John (62).
-    // The plain alias table resolves the spoken name to the gospel, and an intervening «Послание»
-    // breaks the "1 иоанна" greedy multi-token alias — so the epistle was being dropped to the gospel.
-    // When the epistle word «послание»/«письмо» (or an explicit ordinal) precedes one of these forms,
-    // resolve to the epistle instead, with the ordinal (1/2/3) selecting which.
-    private val EPISTLE_MARKER_STEMS = listOf("послани", "письм") // послание/послании/письмо/письме…
+    // ── Numbered-book (ordinal) disambiguation ──────────────────────────────────
+    // Two related problems share one mechanism:
+    //  - "Иоанна" is the Gospel of John (43); "1-е/Первое Послание Иоанна" is the *epistle* 1 John
+    //    (62). The plain alias table resolves the spoken name to the gospel, and an intervening
+    //    «Послание» breaks the "1 иоанна" greedy multi-token alias — so the epistle was being
+    //    dropped to the gospel. A marker word alone ("Послание Иоанна", no ordinal) already
+    //    conventionally means the 1st (1 John) — there's no unnumbered alternative to guard against
+    //    once a marker is present.
+    //  - Every OTHER numbered book family (Царств, Паралипоменон, Коринфянам, Фессалоникийцам,
+    //    Тимофею) only has digit-adjacent aliases registered in BookResolver ("1 царств", "2
+    //    коринфянам"…) — a spelled Russian ordinal ("Первая книга царств") doesn't resolve at all.
+    //    Unlike John/Peter these have no unnumbered meaning, so a marker/filler word alone must NOT
+    //    resolve (that stays the existing, accepted "bare ambiguous numbered book" gap, e.g. bare
+    //    "Коринфянам" with no ordinal) — only an explicit ordinal (digit or word) may fire.
+    // When the marker/filler word («послание»/«письмо»/«книга») or an explicit ordinal precedes one
+    // of these forms, resolve to the numbered book, with the ordinal selecting which.
+    private val EPISTLE_MARKER_STEMS = listOf("послани", "письм", "книг") // послание/письмо/книга…
     private val EPISTLE_CONNECTORS = setOf("к", "ко")
     // Inflected spoken forms of John / Peter that, in an epistle context, mean the epistle.
     private val JOHN_FORMS = setOf("иоанна", "иоанн", "иоанну", "иоанне")
     private val PETER_FORMS = setOf("петра", "петру", "петре", "петр", "пётр")
-    // base = canonical id of the 1st epistle, count = number of epistles (John 62/63/64, Peter 60/61).
-    private data class EpistleSpec(val base: Int, val count: Int)
+    // base = canonical id of the 1st book in the family, count = how many numbered variants exist.
+    // markerAloneDefaultsToFirst: true only for John/Peter (see comment above); the bare stems below
+    // are taken from the digit-stripped forms already registered in BookResolver.kt, so they're
+    // forms already vetted from real transcripts — further inflections can be added the same way as
+    // future training data surfaces them.
+    private data class NumberedBookSpec(val base: Int, val count: Int, val markerAloneDefaultsToFirst: Boolean)
+    private val NUMBERED_BOOK_FORMS: Map<String, NumberedBookSpec> = buildMap {
+        for (f in JOHN_FORMS) put(f, NumberedBookSpec(62, 3, markerAloneDefaultsToFirst = true))
+        for (f in PETER_FORMS) put(f, NumberedBookSpec(60, 2, markerAloneDefaultsToFirst = true))
+        put("царств", NumberedBookSpec(9, 4, markerAloneDefaultsToFirst = false))
+        put("царство", NumberedBookSpec(9, 4, markerAloneDefaultsToFirst = false))
+        put("паралипоменон", NumberedBookSpec(13, 2, markerAloneDefaultsToFirst = false))
+        put("коринфянам", NumberedBookSpec(46, 2, markerAloneDefaultsToFirst = false))
+        put("фессалоникийцам", NumberedBookSpec(52, 2, markerAloneDefaultsToFirst = false))
+        put("солунян", NumberedBookSpec(52, 2, markerAloneDefaultsToFirst = false))
+        put("тимофею", NumberedBookSpec(54, 2, markerAloneDefaultsToFirst = false))
+    }
 
     private sealed interface Atom {
         data class Book(val num: Int) : Atom
@@ -108,6 +139,43 @@ object ReferenceWatcher {
         return interpret(atoms, sticky, now)
     }
 
+    /**
+     * Dual-track entry point for the live pipeline: [transcript] (original language) and
+     * [translation] (its live machine translation) describe the same utterance. Normally they are
+     * concatenated so a citation spoken in either language is caught — but when the translation
+     * *mistranslates* a book name into a different book than the transcript names (seen in
+     * production: Russian "Первая книга царств" — 1 Samuel — machine-translated as "1 Kings"), blind
+     * concatenation lets the translation's book win, since [interpret] treats the last book atom
+     * seen as authoritative and translation tokens are scanned after transcript tokens. That
+     * silently corrupts the sticky book for every later utterance that doesn't restate it.
+     *
+     * When the two tracks name different books, the translation is dropped entirely for this call
+     * (not just its book atom — an MT that garbled the book name can't be trusted for numbers
+     * either) and only the transcript is processed. When they agree, or only one names a book, the
+     * tracks are concatenated as before — this is what lets a translation-only citation (transcript
+     * names no book this utterance) still get picked up.
+     */
+    fun process(
+        transcript: String,
+        translation: String,
+        sticky: Sticky,
+        now: Long = System.currentTimeMillis(),
+        isMusic: Boolean = false,
+    ): List<Ref> {
+        val transcriptBook = lastBookMentioned(transcript)
+        val translationBook = lastBookMentioned(translation)
+        val disagree = transcriptBook != null && translationBook != null && transcriptBook != translationBook
+        val combined = if (disagree) transcript.trim() else "$transcript $translation".trim()
+        return process(combined, sticky, now, isMusic)
+    }
+
+    /** The last book [text] names, or null if it names none. Read-only — does not touch sticky. */
+    private fun lastBookMentioned(text: String): Int? {
+        val tokens = tokenize(text)
+        if (tokens.isEmpty()) return null
+        return classify(tokens).filterIsInstance<Atom.Book>().lastOrNull()?.num
+    }
+
     // ── tokenization ──────────────────────────────────────────────────────────
 
     private fun tokenize(text: String): List<String> {
@@ -132,12 +200,13 @@ object ReferenceWatcher {
         val atoms = ArrayList<Atom>(tokens.size)
         var i = 0
         while (i < tokens.size) {
-            // Epistle disambiguation runs first: "1 Послание Иоанна" → 1 John (62), not the Gospel
-            // (43). The look-back tokens (ordinal / «послание» / «к») were already classified as
-            // Num/Filler, so drop those atoms and emit the resolved epistle book in their place.
-            val epistle = resolveEpistleAt(tokens, i)
-            if (epistle != null) {
-                val (bookNum, back) = epistle
+            // Numbered-book disambiguation runs first: "1 Послание Иоанна" → 1 John (62), not the
+            // Gospel (43); "Первая книга царств" → 1 Samuel (9), not left unresolved. The look-back
+            // tokens (ordinal / «послание»/«книга» / «к») were already classified as Num/Filler, so
+            // drop those atoms and emit the resolved book in their place.
+            val numberedBook = resolveNumberedBookAt(tokens, i)
+            if (numberedBook != null) {
+                val (bookNum, back) = numberedBook
                 repeat(back) { if (atoms.isNotEmpty()) atoms.removeAt(atoms.lastIndex) }
                 atoms.add(Atom.Book(bookNum))
                 i++
@@ -201,38 +270,41 @@ object ReferenceWatcher {
     private fun isEpistleMarker(t: String): Boolean = EPISTLE_MARKER_STEMS.any { t.startsWith(it) }
 
     /**
-     * If [tokens]`[i]` is an epistle-ambiguous book name (John/Peter) marked as an epistle by a
-     * preceding «послание»/«письмо» word and/or an explicit ordinal (digit or word), returns the
-     * epistle's canonical book number plus how many preceding tokens the pattern consumed; else null.
+     * If [tokens]`[i]` is a numbered-book name (John/Peter, or a Царств/Паралипоменон/Коринфянам/
+     * Фессалоникийцам/Тимофею family member) preceded by a marker word («послание»/«письмо»/«книга»)
+     * and/or an explicit ordinal (digit or word), returns the resolved canonical book number plus how
+     * many preceding tokens the pattern consumed; else null.
      *
-     *   "1 Послание Иоанна"  → (62, 2)   // 1 John, consuming «послание» + «1»
-     *   "Послание к Петру"   → (60, 2)   // 1 Peter, consuming «к» + «послание»
-     *   "Первое Иоанна"      → (62, 1)   // 1 John, consuming the word ordinal
+     *   "1 Послание Иоанна"       → (62, 2)  // 1 John, consuming «послание» + «1»
+     *   "Послание к Петру"        → (60, 2)  // 1 Peter, consuming «к» + «послание»
+     *   "Первое Иоанна"           → (62, 1)  // 1 John, consuming the word ordinal
+     *   "Первая книга царств"     → (9, 2)   // 1 Samuel, consuming «книга» + the word ordinal
+     *   "Третья царств"           → (11, 1)  // 1 Kings, consuming the word ordinal alone
      *
      * A bare "Иоанна"/"Петра" with no marker and no ordinal returns null (left to the alias table /
-     * gospel reading), so non-epistle prose can't be hijacked.
+     * gospel reading). A bare "Коринфянам"/"Царств" with a marker but no ordinal ALSO returns null —
+     * unlike John/Peter there's no unnumbered meaning to fall back to, but there's also no convention
+     * that a bare mention means the 1st, so guessing would be wrong more often than right; this stays
+     * the accepted "bare ambiguous numbered book" gap, not a case this function resolves.
      */
-    private fun resolveEpistleAt(tokens: List<String>, i: Int): Pair<Int, Int>? {
-        val spec = when (tokens[i]) {
-            in JOHN_FORMS -> EpistleSpec(62, 3)
-            in PETER_FORMS -> EpistleSpec(60, 2)
-            else -> return null
-        }
+    private fun resolveNumberedBookAt(tokens: List<String>, i: Int): Pair<Int, Int>? {
+        val spec = NUMBERED_BOOK_FORMS[tokens[i]] ?: return null
         var j = i - 1
         var back = 0
         // optional «к»/«ко» connector directly before the book ("послание к иоанну")
         if (j >= 0 && tokens[j] in EPISTLE_CONNECTORS) { j--; back++ }
-        // optional epistle marker word
+        // optional marker/filler word («послание»/«письмо»/«книга»)
         var marker = false
         if (j >= 0 && isEpistleMarker(tokens[j])) { marker = true; j--; back++ }
-        // optional ordinal (digit or word) selecting which epistle
+        // optional ordinal (digit or word) selecting which numbered variant
         var ord: Int? = null
         if (j >= 0) {
             val n = NumberWords.parseToken(tokens[j])
             if (n != null && n in 1..spec.count) { ord = n; back++ }
         }
-        // Require positive evidence of an epistle: the marker word or an explicit ordinal.
-        if (!marker && ord == null) return null
+        // Require an explicit ordinal, unless the family conventionally defaults a bare marker to
+        // the 1st (John/Peter only).
+        if (ord == null && !(marker && spec.markerAloneDefaultsToFirst)) return null
         return (spec.base + (ord ?: 1) - 1) to back
     }
 
@@ -323,8 +395,11 @@ object ReferenceWatcher {
             sticky.watchChapter = chapter
             sticky.watchExpiresAt = now + Config.stickyTtlMs
             val ch = chapter ?: return
-            val tier = if (verseStart != null) 1 else 2
-            out.add(Ref(curBook, ch, verseStart, normEnd(verseStart, verseEnd), tier))
+            // No verse named yet (book + chapter only) — the sticky context above is primed for a
+            // later bare "N стих", but there is no evidence of which verse to show, so emit nothing
+            // rather than guessing verse 1.
+            if (verseStart == null) return
+            out.add(Ref(curBook, ch, verseStart, normEnd(verseStart, verseEnd), 1))
             return
         }
         // No book in this utterance → sticky resolution, but only when a keyword anchored it
@@ -332,10 +407,13 @@ object ReferenceWatcher {
         if (!keywordSeen) return
         val book = sticky.watchBook ?: return
         val ch = chapter ?: sticky.watchChapter ?: return
-        if (verseStart == null && chapter == null) return // nothing new
-        out.add(Ref(book, ch, verseStart, normEnd(verseStart, verseEnd), 3))
+        if (chapter == null && verseStart == null) return // nothing new
         sticky.watchChapter = ch
         sticky.watchExpiresAt = now + Config.stickyTtlMs
+        // A new bare chapter arrived via the sticky book, but no verse yet — same situation as the
+        // book+chapter branch above: prime silently and wait for a real verse rather than guessing 1.
+        if (verseStart == null) return
+        out.add(Ref(book, ch, verseStart, normEnd(verseStart, verseEnd), 2))
     }
 
     private fun normEnd(start: Int?, end: Int?): Int? =

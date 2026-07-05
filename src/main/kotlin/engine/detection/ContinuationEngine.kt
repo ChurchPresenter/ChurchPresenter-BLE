@@ -3,6 +3,7 @@ package engine.detection
 import engine.Config
 import engine.bible.EngineTranslation
 import engine.bible.EngineVerse
+import engine.engine.AgreementScorer
 import engine.engine.UtteranceState
 
 object ContinuationEngine {
@@ -12,6 +13,48 @@ object ContinuationEngine {
         val translation: EngineTranslation,
         val confidence: Double,
     )
+
+    /**
+     * Once a book+chapter is known (the sticky), score every verse in that chapter — plus every
+     * other chapter visited earlier this service ([UtteranceState.chapterHistory]) — against what
+     * was spoken, instead of requiring an explicit verse citation or a prior confirmed verse to
+     * advance from (unlike [check], this doesn't need [UtteranceState.lastDetected]). This fills the
+     * silence [ReferenceWatcher.emit] leaves when a book+chapter is announced but no verse has ever
+     * been read yet, handles jumping more than 3 verses ahead within the same chapter, and — via the
+     * history — lets a preacher revisit an earlier passage without restating its book/chapter at all.
+     * A margin-over-runner-up gate (mirroring [ReverseLookup]'s ratio gate) keeps this silent rather
+     * than guessing when two candidate verses (in the same or different chapters) score too close
+     * together; widening the candidate pool to the whole history raises that ambiguity risk, which is
+     * exactly why the gate matters here, not less.
+     */
+    fun checkChapterScope(state: UtteranceState, translation: EngineTranslation): ContinuationResult? {
+        val now = System.currentTimeMillis()
+        val stickyValid = state.watchExpiresAt == 0L || now <= state.watchExpiresAt
+        val candidates = buildSet {
+            if (stickyValid) {
+                val book = state.watchBook
+                val chapter = state.watchChapter
+                if (book != null && chapter != null) add(book to chapter)
+            }
+            addAll(state.chapterHistory)
+        }
+        if (candidates.isEmpty()) return null
+
+        val query = "${state.transcript} ${state.translation}".trim()
+        if (query.split(Regex("\\s+")).size < 3) return null
+
+        val allVerses = candidates.flatMap { translation.byChapter[it]?.filter { v -> !v.isHeader } ?: emptyList() }
+        val scored = allVerses
+            .map { it to AgreementScorer.score(it.text, state.transcript, state.translation) }
+            .filter { it.second >= Config.chapterScopeMinAgreement }
+            .sortedByDescending { it.second }
+        val top = scored.getOrNull(0) ?: return null
+        val runnerUp = scored.getOrNull(1)
+        val ratio = if (runnerUp != null && runnerUp.second > 0) top.second / runnerUp.second else Double.MAX_VALUE
+        if (runnerUp != null && ratio < Config.chapterScopeMinRatio) return null // ambiguous — stay silent
+
+        return ContinuationResult(top.first, translation, top.second.coerceIn(0.55, 0.85))
+    }
 
     fun check(
         state: UtteranceState,

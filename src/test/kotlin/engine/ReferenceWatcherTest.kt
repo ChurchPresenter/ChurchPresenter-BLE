@@ -93,6 +93,21 @@ class ReferenceWatcherTest {
             "expected Romans 6:4, got $r")
     }
 
+    @Test fun `book plus chapter with no verse yet does not emit, but still primes the sticky`() {
+        // The speaker announces the book+chapter, then goes on a tangent before reading the verse —
+        // nothing should appear on screen (no fabricated "verse 1"), but the sticky context must
+        // still be primed so the eventual bare verse resolves against it.
+        val sticky = TestSticky()
+        val announced = ReferenceWatcher.process("1 Коринфянам, 11 глава.", sticky, now = 1_000L)
+        assertTrue(announced.isEmpty(), "book+chapter with no verse must not emit, got $announced")
+        assertEquals(46, sticky.watchBook)
+        assertEquals(11, sticky.watchChapter)
+
+        val afterTangent = ReferenceWatcher.process("23 стих.", sticky, now = 1_000L)
+        assertTrue(afterTangent.any { it.triple() == Triple(46, 11, 23) },
+            "expected 1 Corinthians 11:23 once the verse is read, got $afterTangent")
+    }
+
     // ── Precision (must NOT emit) ───────────────────────────────────────────────
 
     @Test fun `bare number in prose does not emit`() {
@@ -213,6 +228,131 @@ class ReferenceWatcherTest {
         assertEquals("2 Corinthians", BookResolver.canonicalName(47))
     }
 
+    // ── Numbered-book (ordinal) disambiguation beyond John/Peter ────────────────
+
+    @Test fun `Первая книга царств resolves to 1 Samuel, not left unresolved`() {
+        // The real trigger from the 2026-07-05 session log: spelled ordinal + "книга" + stem, with
+        // no digit anywhere — the abbreviated "1-я царств" alias never fires here.
+        val r = run("Первая книга царств, 15 глава, с 22 по 30 стих.").single()
+        assertEquals(Triple(9, 15, 22), r.triple())
+        assertEquals(30, r.verseEnd)
+    }
+
+    @Test fun `Первое Коринфянам resolves to 1 Corinthians with no книга filler`() {
+        val r = run("Первое Коринфянам, 11 глава, 23 стих.").single()
+        assertEquals(Triple(46, 11, 23), r.triple())
+    }
+
+    @Test fun `Третья царств resolves to 1 Kings (Synodal 3rd Kingdoms) and primes the sticky`() {
+        val sticky = TestSticky()
+        val refs = ReferenceWatcher.process("Третья царств, 4 глава.", sticky, now = 1_000L)
+        assertTrue(refs.isEmpty(), "book+chapter with no verse must not emit, got $refs")
+        assertEquals(11, sticky.watchBook)
+        assertEquals(4, sticky.watchChapter)
+    }
+
+    @Test fun `book, chapter, and verse each resolve independently across separate utterances`() {
+        // Real speech rarely announces a full reference as one clean phrase — book, chapter, and
+        // verse are usually spoken as separate utterances, often with a tangent in between. Neither
+        // of the first two utterances should show anything on screen (no book/chapter alone, and no
+        // fabricated verse 1 for the chapter-only continuation) — only the third, once a real verse
+        // is finally spoken, should resolve.
+        val sticky = TestSticky()
+        val bookOnly = ReferenceWatcher.process("Первая книга царств.", sticky, now = 1_000L)
+        assertTrue(bookOnly.isEmpty(), "book alone must not emit, got $bookOnly")
+        assertEquals(9, sticky.watchBook)
+
+        val chapterOnly = ReferenceWatcher.process("15 глава.", sticky, now = 1_000L)
+        assertTrue(chapterOnly.isEmpty(), "chapter-only continuation must not emit a fabricated verse, got $chapterOnly")
+        assertEquals(15, sticky.watchChapter)
+
+        val verseOnly = ReferenceWatcher.process("22 стих.", sticky, now = 1_000L)
+        assertTrue(verseOnly.any { it.triple() == Triple(9, 15, 22) },
+            "expected 1 Samuel 15:22 once the verse is finally spoken, got $verseOnly")
+    }
+
+    @Test fun `bare numbered book with a marker but no ordinal stays unresolved`() {
+        // Unlike John/Peter, «книга царств» / bare «Коринфянам» has no default "means the 1st"
+        // convention — resolving here would guess wrong as often as right, so it must stay silent
+        // (the existing, accepted "bare ambiguous numbered book" gap). Checking the sticky directly
+        // (not just refs.isEmpty()) matters: book+chapter-with-no-verse never emits a Ref regardless
+        // of which book resolved (see the "primes the sticky" tests above), so an empty refs list
+        // alone wouldn't catch a regression where "царств"/"коринфянам" wrongly resolved anyway.
+        val sticky1 = TestSticky()
+        val refs1 = ReferenceWatcher.process("Книга царств, 15 глава.", sticky1, now = 1_000L)
+        assertTrue(refs1.isEmpty())
+        assertEquals(null, sticky1.watchBook, "bare «книга царств» must stay unresolved, not default to 1 Samuel")
+
+        val sticky2 = TestSticky()
+        val refs2 = ReferenceWatcher.process("Коринфянам, 11 глава.", sticky2, now = 1_000L)
+        assertTrue(refs2.isEmpty())
+        assertEquals(null, sticky2.watchBook, "bare «Коринфянам» must stay unresolved, not default to 1 Corinthians")
+    }
+
+    // ── Bilingual transcript/translation disagreement (mistranslated book) ─────
+
+    @Test fun `transcript book wins over mistranslated translation book (1 Samuel not 1 Kings)`() {
+        val sticky = TestSticky()
+        val refs = ReferenceWatcher.process(
+            "1-я царств, 15 глава, с 22 по 30 стих.",
+            "1 Kings, chapter 15, from 22 to 30.",
+            sticky, now = 1_000L,
+        )
+        assertTrue(
+            refs.any { it.bookNum == 9 && it.chapter == 15 && it.verseStart == 22 && it.verseEnd == 30 },
+            "expected 1 Samuel 15:22-30 from the transcript, got $refs",
+        )
+        assertEquals(9, sticky.watchBook, "sticky must carry the transcript's book, not the mistranslated 1 Kings")
+        assertEquals(15, sticky.watchChapter)
+
+        // A later utterance where the translation is empty/lagging must still continue against the
+        // uncorrupted sticky.
+        val late = ReferenceWatcher.process("31 стих.", "", sticky, now = 1_000L)
+        assertTrue(late.any { it.bookNum == 9 && it.chapter == 15 && it.verseStart == 31 },
+            "expected sticky continuation into 1 Samuel 15:31, got $late")
+    }
+
+    @Test fun `transcript book wins over mistranslated translation book (Lamentations not Jeremiah)`() {
+        val sticky = TestSticky()
+        val refs = ReferenceWatcher.process(
+            "Книга Плач Иеремии, 3 глава, 21 стих.",
+            "The book Lamentations of Jeremiah, 3 chapters, 21 verses.",
+            sticky, now = 1_000L,
+        )
+        assertTrue(refs.any { it.bookNum == 25 && it.chapter == 3 },
+            "expected Lamentations 3 from the transcript, got $refs")
+        assertEquals(25, sticky.watchBook, "sticky must not be corrupted to Jeremiah (24)")
+    }
+
+    @Test fun `translation-only book citation is still picked up when transcript has none`() {
+        // Book+chapter only (no verse spoken) never emits a Ref (see the tangent test above) — the
+        // signal to check for a translation-only citation is that it still primes the sticky.
+        val sticky = TestSticky()
+        val refs = ReferenceWatcher.process(
+            "и мы читаем",
+            "1 Corinthians 11.",
+            sticky, now = 1_000L,
+        )
+        assertTrue(refs.isEmpty(), "book+chapter with no verse must not emit, got $refs")
+        assertEquals(46, sticky.watchBook, "translation-only book citation must still prime the sticky")
+        assertEquals(11, sticky.watchChapter)
+
+        // A later bare verse (transcript only, translation empty/lagging) resolves against it.
+        val late = ReferenceWatcher.process("23 стих.", "", sticky, now = 1_000L)
+        assertTrue(late.any { it.bookNum == 46 && it.chapter == 11 && it.verseStart == 23 },
+            "expected 1 Corinthians 11:23 via the translation-primed sticky, got $late")
+    }
+
+    @Test fun `agreeing tracks still combine normally`() {
+        val refs = ReferenceWatcher.process(
+            "Послание к римлянам, 6 глава, 4 стих.",
+            "Romans chapter 6 verse 4.",
+            TestSticky(), now = 1_000L,
+        )
+        assertTrue(refs.any { it.bookNum == 45 && it.chapter == 6 && it.verseStart == 4 },
+            "expected Romans 6:4 when both tracks agree, got $refs")
+    }
+
     // ── Music precision gate ─────────────────────────────────────────────────────
 
     @Test fun `music segment is suppressed and does not seed sticky`() {
@@ -244,16 +384,20 @@ class ReferenceWatcherTest {
     // ── Aggressiveness-gated recall: off at lower levels, on at the intended level ─
 
     @Test fun `normalizeStt gates э to е book resolution`() {
+        // Book + chapter only (no verse) never emits a Ref, so check the sticky it primes instead.
         val line = "Послание к эфесянам, 6 глава, начинается следующими словами."
+        fun stickyBookChapter(): Pair<Int?, Int?> {
+            val sticky = TestSticky()
+            ReferenceWatcher.process(line, sticky, now = 1_000L)
+            return sticky.watchBook to sticky.watchChapter
+        }
         try {
             Config.applyLevel("conservative")
-            assertTrue(run(line).isEmpty(), "conservative must not normalize э→е, got ${run(line)}")
+            assertEquals(null to null, stickyBookChapter(), "conservative must not normalize э→е")
             Config.applyLevel("balanced")
-            assertTrue(run(line).any { it.bookNum == 49 && it.chapter == 6 },
-                "balanced should resolve Ephesians 6, got ${run(line)}")
+            assertEquals(49 to 6, stickyBookChapter(), "balanced should resolve Ephesians 6")
             Config.applyLevel("aggressive")
-            assertTrue(run(line).any { it.bookNum == 49 && it.chapter == 6 },
-                "aggressive should resolve Ephesians 6, got ${run(line)}")
+            assertEquals(49 to 6, stickyBookChapter(), "aggressive should resolve Ephesians 6")
         } finally {
             Config.applyLevel("balanced")
         }

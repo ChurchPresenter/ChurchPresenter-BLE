@@ -39,6 +39,7 @@ object DetectionLogger {
     private const val MAX_AGE_DAYS = 30L
     private const val BASE_PREFIX = "detection-log-"
     private const val CANDIDATE_PREFIX = "candidate-log-"
+    private const val STICKY_PREFIX = "sticky-log-"
 
     private val lock = Any()
     private val cleanedUp = AtomicBoolean(false)
@@ -67,7 +68,7 @@ object DetectionLogger {
         raw.map { if (it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '.' || it == '_' || it == '-') it else '_' }
             .joinToString("")
 
-    /** Deletes dated detection + candidate logs older than [MAX_AGE_DAYS] in [dir]. Once per process. */
+    /** Deletes dated detection + candidate + sticky logs older than [MAX_AGE_DAYS] in [dir]. Once per process. */
     private fun cleanupOldLogsOnce(dir: File?) {
         if (dir == null || !cleanedUp.compareAndSet(false, true)) return
         runCatching {
@@ -75,7 +76,7 @@ object DetectionLogger {
             dir.listFiles()?.forEach { file ->
                 val n = file.name
                 if (file.isFile && n.endsWith(".jsonl") &&
-                    (n.startsWith(BASE_PREFIX) || n.startsWith(CANDIDATE_PREFIX)) &&
+                    (n.startsWith(BASE_PREFIX) || n.startsWith(CANDIDATE_PREFIX) || n.startsWith(STICKY_PREFIX)) &&
                     file.lastModified() < cutoff
                 ) file.delete()
             }
@@ -139,6 +140,38 @@ object DetectionLogger {
         cleanupOldLogsOnce(target.parentFile)
         runCatching {
             synchronized(lock) { target.appendText(lineFor(transcript, translation, event, reason) + "\n", Charsets.UTF_8) }
+        }
+    }
+
+    /**
+     * Every time the sticky book/chapter changes — even when nothing was emitted — for tracing the
+     * origin of an unexpected jump (e.g. a stale/wrong sticky with no corresponding logged detection).
+     * Independent file (`sticky-log-*.jsonl`) from detection-log/candidate-log so it can't affect
+     * existing training tooling that reads those. Gated by [Config.logStickyChanges].
+     */
+    fun logStickyChange(
+        transcript: String, translation: String,
+        prevBook: Int?, prevChapter: Int?, newBook: Int?, newChapter: Int?,
+    ) {
+        if (!Config.logStickyChanges) return
+        val configured = path ?: return
+        val target = datedFile(configured, STICKY_PREFIX)
+        cleanupOldLogsOnce(target.parentFile)
+        runCatching {
+            val line = buildString {
+                append('{')
+                append("\"ts\":\"").append(Instant.now()).append("\",")
+                append("\"prevBook\":").append(prevBook ?: "null").append(',')
+                append("\"prevChapter\":").append(prevChapter ?: "null").append(',')
+                append("\"newBook\":").append(newBook ?: "null").append(',')
+                append("\"newChapter\":").append(newChapter ?: "null").append(',')
+                if (sessionId != null) append("\"sessionId\":\"").append(esc(sessionId!!)).append("\",")
+                else append("\"sessionId\":null,")
+                append("\"transcript\":\"").append(esc(transcript)).append("\",")
+                append("\"translation\":\"").append(esc(translation)).append('"')
+                append('}')
+            }
+            synchronized(lock) { target.appendText(line + "\n", Charsets.UTF_8) }
         }
     }
 

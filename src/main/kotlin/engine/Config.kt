@@ -27,6 +27,10 @@ object Config {
     // visible for tuning. Floored to avoid noise. Toggle off with -Dengine.logCandidates=false.
     var logCandidates = System.getProperty("engine.logCandidates")?.toBooleanStrictOrNull() ?: true
     var candidateLogMinConfidence = 0.15
+    // Traces every sticky book/chapter change to sticky-log-*.jsonl, even when nothing emits — the
+    // diagnostic for an unexplained stale/wrong sticky that never produced a logged detection.
+    // Low-volume (sticky changes are infrequent, not per-utterance); same default spirit as logCandidates.
+    var logStickyChanges = System.getProperty("engine.logStickyChanges")?.toBooleanStrictOrNull() ?: true
     val continuationTimeoutMs = 30_000L
     val dedupWindow = 32
     // Suppress an identical reference only within this window (time-based, replaces the old fixed
@@ -44,6 +48,15 @@ object Config {
     val bm25B = 0.75
     val reverseWindowWords = 25
     val reverseTopK = 10
+
+    // Chapter-scoped continuation: once book+chapter is known (the sticky), score every verse in that
+    // chapter against what was spoken instead of requiring an explicit verse citation. The candidate
+    // pool is already narrowed to one chapter (~10-50 verses), so this can use a lower agreement floor
+    // than the global reverse lookup without raising false-positive risk — protected instead by the
+    // margin-over-runner-up gate below (same safety pattern as reverseMinScoreRatio). Starting values;
+    // tune against real training data.
+    var chapterScopeMinAgreement = 0.10
+    var chapterScopeMinRatio = 1.5
 
     // How long an announced book+chapter stays "sticky" for verse-by-verse reading. Generous by
     // default because expositional reads span minutes; shrunk for aggressive/rapid-fire cadence.

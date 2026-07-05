@@ -43,7 +43,7 @@ data class ScriptureEvent(
     // A corroboration/confidence signal for the UI: both present = strongest.
     val tracks: List<String> = emptyList(),
     // ── Diagnostics (logged for training; not used by the UI) ──
-    val tier: Int? = null,             // explicit-ref tier (1/2/3); null for reverse/continuation
+    val tier: Int? = null,             // explicit-ref tier (1/2); null for reverse/continuation
     val bm25Score: Double? = null,     // reverse: top BM25 score
     val bm25Ratio: Double? = null,     // reverse: top-1/top-2 score ratio (margin over runner-up)
     val speechType: String? = null,    // STT speech_type at decision time (Speaking/Quiet/Music)
@@ -114,7 +114,27 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
 
         // 1. Explicit / sticky references (stateful watcher). May yield several per utterance.
         //    Suppressed on music segments (sung lyrics aren't references being looked up).
-        val refs = ReferenceWatcher.process(combined, state, now, isMusic = isMusic(state.speechType))
+        val prevWatchBook = state.watchBook
+        val prevWatchChapter = state.watchChapter
+        val refs = ReferenceWatcher.process(
+            state.transcript, state.translation, state, now, isMusic = isMusic(state.speechType),
+        )
+        // Trace every sticky change — even when nothing emits — so an unexpected jump (e.g. a stale
+        // sticky with no corresponding logged detection) can be diagnosed after the fact.
+        if (state.watchBook != prevWatchBook || state.watchChapter != prevWatchChapter) {
+            DetectionLogger.logStickyChange(
+                state.transcript, state.translation,
+                prevWatchBook, prevWatchChapter, state.watchBook, state.watchChapter,
+            )
+        }
+        // Remember every chapter the sticky has pointed at this service (book+chapter-only
+        // announcements included, even though those no longer emit a Ref — see ReferenceWatcher.emit)
+        // so a later verse mention can resolve against any of them, not just the current one.
+        run {
+            val book = state.watchBook
+            val chapter = state.watchChapter
+            if (book != null && chapter != null) state.touchChapterHistory(book, chapter)
+        }
         if (refs.isNotEmpty()) {
             val emitted = ArrayList<ScriptureEvent>()
             for (ref in refs) {
@@ -162,15 +182,30 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
             }
         }
 
-        // 3. Continuation
-        val cont = ContinuationEngine.check(state, translations)
+        // 3. Continuation — sequential next-3 from a confirmed verse first (cheap, precise); when
+        //    that doesn't apply or doesn't find a match (no verse confirmed yet, or a jump further
+        //    than 3 verses within the same chapter), fall back to scoring every verse in the known
+        //    sticky chapter, so a bare "book + chapter" announcement doesn't need an explicit verse
+        //    citation to be found once the reading actually starts.
+        val sequential = ContinuationEngine.check(state, translations)
+        val cont = sequential ?: ContinuationEngine.checkChapterScope(state, pickTranslation(state.transcript))
         if (cont != null) {
+            // Kept distinct from "continuation" in the detection log so the paths stay visually
+            // separable for training/triage: a chapter-wide scan is a materially different signal
+            // than the cheap sequential-next-verse check, and matching a DIFFERENT, earlier chapter
+            // via history (a preacher revisiting a passage) is rarer/riskier than matching the
+            // chapter we're already expecting — worth telling apart in the log.
+            val matchType = when {
+                sequential != null -> "continuation"
+                cont.verse.bookNum == state.watchBook && cont.verse.chapter == state.watchChapter -> "chapter-scan"
+                else -> "chapter-history"
+            }
             val event = buildEvent(
                 id = state.id,
                 verse = cont.verse,
                 translation = cont.translation,
                 confidence = cont.confidence,
-                matchType = "continuation",
+                matchType = matchType,
                 verseEnd = null,
             ).copy(type = "scripture.continuation")
             val decision = stabilizer.evaluate(refKey(event), event.confidence)
@@ -266,18 +301,17 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         else if (ref.verseStart != null) "$bookName ${ref.chapter}:${verse.verse}"
         else "$bookName ${ref.chapter}"
 
-        // Tier 3 (sticky, no book spoken) is corroborated by the spoken verse content; tiers 1/2
-        // are explicit citations and trusted outright.
+        // Tier 2 (sticky, no book spoken) is corroborated by the spoken verse content; tier 1
+        // (explicit book+chapter+verse) is trusted outright.
         val confidence = when (ref.tier) {
             1 -> 0.95
-            2 -> 0.90
             else -> {
                 val agree = AgreementScorer.score(verse.text, state.transcript, state.translation)
                 (0.60 + (agree * 0.30)).coerceIn(0.60, 0.88)
             }
         }
-        val matchType = if (ref.tier == 3) "continuation" else "explicit"
-        val type = if (ref.tier == 3) "scripture.continuation" else "scripture.detected"
+        val matchType = if (ref.tier == 2) "continuation" else "explicit"
+        val type = if (ref.tier == 2) "scripture.continuation" else "scripture.detected"
 
         return ScriptureEvent(
             type = type,

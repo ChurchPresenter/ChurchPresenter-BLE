@@ -36,4 +36,16 @@ data class UtteranceState(
     override var watchBook: Int? = null,
     override var watchChapter: Int? = null,
     override var watchExpiresAt: Long = 0L,
-) : ReferenceWatcher.Sticky
+    // Every distinct (book, chapter) visited this service (announced or confirmed), most-recently-
+    // touched last, deduplicated — lets a later verse mention resolve against ANY chapter visited
+    // this session (see ContinuationEngine.checkChapterScope), not just the current sticky. Same-
+    // service only (cleared only by a process restart); intentionally unbounded — a sermon touching
+    // 20-30 chapters is trivial memory — unlike the sticky above, entries here have no TTL.
+    val chapterHistory: LinkedHashSet<Pair<Int, Int>> = LinkedHashSet(),
+) : ReferenceWatcher.Sticky {
+    fun touchChapterHistory(book: Int, chapter: Int) {
+        val key = book to chapter
+        chapterHistory.remove(key) // re-insert at the end so it's most-recent, not duplicated
+        chapterHistory.add(key)
+    }
+}
