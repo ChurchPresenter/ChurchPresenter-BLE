@@ -2,10 +2,14 @@ package engine.socket
 
 import engine.Config
 import engine.engine.DetectionEngine
-import io.ktor.server.routing.*
-import io.ktor.server.websocket.*
-import io.ktor.websocket.*
-import kotlinx.serialization.json.*
+import io.ktor.server.routing.Route
+import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 private val json = Json {
     ignoreUnknownKeys = true

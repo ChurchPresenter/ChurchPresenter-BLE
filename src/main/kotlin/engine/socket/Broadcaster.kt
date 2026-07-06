@@ -1,7 +1,8 @@
 package engine.socket
 
 import engine.engine.ScriptureEvent
-import io.ktor.websocket.*
+import io.ktor.websocket.Frame
+import io.ktor.websocket.WebSocketSession
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.concurrent.CopyOnWriteArraySet

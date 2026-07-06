@@ -7,11 +7,11 @@ import engine.engine.DetectionLogger
 import engine.socket.Broadcaster
 import engine.socket.SttSocketClient
 import engine.socket.bibleEngineSocket
-import io.ktor.server.application.*
-import io.ktor.server.engine.*
-import io.ktor.server.netty.*
-import io.ktor.server.routing.*
-import io.ktor.server.websocket.*
+import io.ktor.server.application.install
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
+import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
 import java.io.File
 
 /**
