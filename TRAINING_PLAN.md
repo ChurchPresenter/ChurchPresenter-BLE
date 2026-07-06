@@ -276,6 +276,12 @@ unattended during a real service — they're still worth fixing for recall/preci
 longer a live-service safety issue. An `explicit`/`continuation` false positive still goes live
 instantly, so those two match types remain the highest-stakes category to get right.
 
+The app's own training logs (`live-references-*.jsonl` / `suggestion-outcomes-*.jsonl`, produced by
+`TrainingDataLogger` — same files `triage_report.py` reads) now also carry this `matchType` field, so
+a future session can directly measure acceptance/dismissal rate per tier (e.g. "were staged
+chapter-history suggestions mostly accepted via double-click, or mostly ignored?") instead of relying
+on the engine's own detection-log alone.
+
 ---
 
 ## Critical Gotchas: Book Numbering
