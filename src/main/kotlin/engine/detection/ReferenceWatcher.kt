@@ -102,6 +102,23 @@ object ReferenceWatcher {
         put("тимофею", NumberedBookSpec(54, 2, markerAloneDefaultsToFirst = false))
     }
 
+    // ── Ambiguous common-word RU book aliases ───────────────────────────────────
+    // Bare forms that are also ordinary vocabulary or narration naming a person, not citing a book:
+    // dative/locative "Иоанну"/"Иоанне" narrate the apostle by name (a real citation is genitive/
+    // nominative "Иоанна"/"Иоанн" — already unconditional aliases, untouched here); "бытие"/"быт" is
+    // ordinary vocabulary ("being/existence") at least as often as it names Genesis. These must NOT
+    // resolve to Atom.Book on the bare word alone; they need a chapter-number digit within 2 tokens
+    // either side, or an explicit book/epistle/gospel marker noun in the preceding 2 tokens (bare
+    // prepositions like «в»/«от» deliberately do NOT count — too common in ordinary prose; the real
+    // "бытие" false positive was itself "...в то бытие"). Add further forms here the same way as
+    // future training data surfaces them (mirrors NUMBERED_BOOK_FORMS above).
+    // internal (not private): src/test's fuzz test iterates this table directly so any future
+    // addition is automatically covered without touching the test.
+    internal val AMBIGUOUS_BOOK_FORMS: Map<String, Int> = mapOf(
+        "иоанну" to 43, "иоанне" to 43,
+        "бытие" to 1, "быт" to 1,
+    )
+
     private sealed interface Atom {
         data class Book(val num: Int) : Atom
         object ChapKw : Atom
@@ -224,6 +241,14 @@ object ReferenceWatcher {
                 // prose (the translation track flows through here too), hijacking the sticky book.
                 // Multi-word aliases always carry a space (length ≥ 3) and are kept.
                 if (bookNum != null && (len > 1 || phrase.length >= 3)) {
+                    // Ambiguous common-word aliases (bare "иоанну"/"бытие"…) need corroborating
+                    // context — a chapter/verse digit nearby or an explicit citation marker — or
+                    // they're just ordinary vocabulary/narration, not a book being named.
+                    if (len == 1 && AMBIGUOUS_BOOK_FORMS[phrase] != null &&
+                        !hasAmbiguousBookCorroboration(tokens, i)
+                    ) {
+                        break
+                    }
                     atoms.add(Atom.Book(bookNum))
                     i += len
                     matched = true
@@ -238,8 +263,9 @@ object ReferenceWatcher {
             if (tok != ":" && tok != "-" && !isChapKw(tok) && !isVerseKw(tok) &&
                 tok !in RANGE_WORDS && tok !in LIST_WORDS && NumberWords.parseToken(tok) == null
             ) {
-                BookResolver.resolveStem(tok)?.let {
-                    atoms.add(Atom.Book(it)); i++; matched = true
+                BookResolver.resolveStem(tok)?.let { bookNum ->
+                    val ambiguous = AMBIGUOUS_BOOK_FORMS[tok] != null && !hasAmbiguousBookCorroboration(tokens, i)
+                    if (!ambiguous) { atoms.add(Atom.Book(bookNum)); i++; matched = true }
                 }
             }
             if (matched) continue
@@ -306,6 +332,23 @@ object ReferenceWatcher {
         // the 1st (John/Peter only).
         if (ord == null && !(marker && spec.markerAloneDefaultsToFirst)) return null
         return (spec.base + (ord ?: 1) - 1) to back
+    }
+
+    /**
+     * True when `tokens[i]` (one of [AMBIGUOUS_BOOK_FORMS]) has corroborating context: a
+     * chapter/verse digit within 2 tokens either side, or an explicit book/epistle/gospel marker
+     * noun within the preceding 2 tokens.
+     */
+    private fun hasAmbiguousBookCorroboration(tokens: List<String>, i: Int): Boolean {
+        for (d in 1..2) {
+            if (NumberWords.parseToken(tokens.getOrNull(i + d) ?: "") != null) return true
+            if (NumberWords.parseToken(tokens.getOrNull(i - d) ?: "") != null) return true
+        }
+        for (d in 1..2) {
+            val back = tokens.getOrNull(i - d) ?: continue
+            if (isEpistleMarker(back) || back.startsWith("евангели")) return true
+        }
+        return false
     }
 
     // ── interpretation ──────────────────────────────────────────────────────────
@@ -389,12 +432,21 @@ object ReferenceWatcher {
     ) {
         if (curBook != null) {
             // A book was named — make it sticky even if no chapter followed yet, so a chapter/verse
-            // in a *later* utterance ("…к римлянам." → "Десятая глава…") still attaches to it. A new
-            // book always resets the carried chapter so a stale one can't bind.
+            // in a *later* utterance ("…к римлянам." → "Десятая глава…") still attaches to it. A
+            // genuinely NEW book (different from what was already sticky) always resets the carried
+            // chapter so a stale one can't bind to it — but the SAME book merely mentioned again
+            // within this call (trailing after its own chapter number in RU's "N глава [Книги]" word
+            // order, or re-named on the other bilingual track after the combined string already
+            // resolved a chapter) must not wipe a chapter this call already established: an absent
+            // chapter on THIS mention just means "nothing new was said," not "the chapter is unknown
+            // again." Snapshot both values before mutating — sticky.watchChapter is read and written
+            // in this same branch.
+            val sameBook = curBook == sticky.watchBook
+            val resolvedChapter = chapter ?: sticky.watchChapter.takeIf { sameBook }
             sticky.watchBook = curBook
-            sticky.watchChapter = chapter
+            sticky.watchChapter = resolvedChapter
             sticky.watchExpiresAt = now + Config.stickyTtlMs
-            val ch = chapter ?: return
+            val ch = resolvedChapter ?: return
             // No verse named yet (book + chapter only) — the sticky context above is primed for a
             // later bare "N стих", but there is no evidence of which verse to show, so emit nothing
             // rather than guessing verse 1.

@@ -3,17 +3,14 @@
 We have a training guide, read that: `TRAINING_PLAN.md` (in this directory, `ChurchPresenter-BLE/`).
 Here are the new session files:
 
-- `<path-to>/detection-log-<session>.jsonl`
-- `<path-to>/live-references-<session>.jsonl`
-- `<path-to>/<session>.db`
-- `<path-to>/sticky-log-<session>.jsonl` (if present — hand-diagnosis only, see below)
-- `<path-to>/candidate-log-<session>.jsonl` (if present)
 
 Follow the workflow in `TRAINING_PLAN.md` exactly: run `tools/triage_report.py` on the detection-log +
 live-references first, then work each FN/FP/PREMATURE in priority order. Use the `.db` file only when a
-pattern is ambiguous from the report text alone. If a stale/wrong sticky shows up with no matching
-book/chapter anywhere in the preceding transcript (the Revelation/Proverbs pattern from the first
-session), cross-reference `sticky-log-*.jsonl` for that timestamp before guessing.
+pattern is ambiguous from the report text alone. If a `sticky-log-*.jsonl` is present, also run
+`./gradlew stickyAudit --args="<path>"` (Workflow step 2b) — it automatically classifies every sticky
+book/chapter jump against the live engine's own alias/stem data, so you no longer need to manually
+cross-reference timestamps by hand (that used to take hours; the Revelation/Proverbs pattern from the
+first session, and two more bugs from the second, were all found this way before the tool existed).
 
 A few things I want you to actually do differently from a plain "read the guide and go" pass, based on
 what worked well and what didn't last time:
@@ -54,10 +51,16 @@ what worked well and what didn't last time:
    — no real Bible files needed). Run `bash gradlew test` (full suite, not just the new tests) before
    calling anything done.
 
-7. **Update `TRAINING_PLAN.md`** — the Known Engine Gaps table, the Resolved/Built notes below it, and
-   the Test Strategy / File Locations sections if a new test file or artifact type gets added. Keep it
-   scannable, not a chronological diary.
+7. **When a fix generalizes a mechanism (not just one word/phrase), also add a mechanism-level test** —
+   an invariant checked across several inputs, or a seeded fuzz test iterating an extensible table
+   (e.g. `AMBIGUOUS_BOOK_FORMS`) rather than hardcoding today's specific words. See the "Mechanism-level
+   tests" note under Test Strategy in `TRAINING_PLAN.md`. The goal: the next word/phrase that falls into
+   the same trap should be caught automatically, not require another full triage session to find by hand.
 
-8. **Don't commit unless asked.** Implement and verify with tests; leave the commit decision to me.
+8. **Update `TRAINING_PLAN.md`** — the Known Engine Gaps table, the Resolved/Built notes below it, and
+   the Test Strategy / File Locations sections if a new test file, tool, or artifact type gets added.
+   Keep it scannable, not a chronological diary.
+
+9. **Don't commit unless asked.** Implement and verify with tests; leave the commit decision to me.
 
 Start by reading `TRAINING_PLAN.md`, then run the triage report.

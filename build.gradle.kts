@@ -59,3 +59,10 @@ tasks.jar {
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
+
+tasks.register<JavaExec>("stickyAudit") {
+    group = "verification"
+    description = "Audits a sticky-log-*.jsonl for unexplained/risky sticky jumps (see TRAINING_PLAN.md)."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("engine.tools.StickyAuditKt")
+}

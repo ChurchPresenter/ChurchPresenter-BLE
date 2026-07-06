@@ -2,6 +2,7 @@ package engine
 
 import engine.detection.BookResolver
 import engine.detection.ReferenceWatcher
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -287,6 +288,195 @@ class ReferenceWatcherTest {
         val refs2 = ReferenceWatcher.process("Коринфянам, 11 глава.", sticky2, now = 1_000L)
         assertTrue(refs2.isEmpty())
         assertEquals(null, sticky2.watchBook, "bare «Коринфянам» must stay unresolved, not default to 1 Corinthians")
+    }
+
+    // ── Same-book re-mention must not clobber a just-set sticky chapter (2026-07-05 study) ────
+
+    @Test fun `trailing book mention after its own chapter number does not wipe the chapter just set`() {
+        // Real trace (sticky-log 2026-07-05_172751.jsonl, ts 22:19:16.351Z): sticky already watching
+        // Revelation from earlier reading. RU's common "N глава [Книги-genitive]" word order names
+        // the chapter BEFORE the trailing book mention — the book atom's own end-of-segment flush
+        // (curBook=66, chapter=null) must not undo the chapter the same call's earlier flush set.
+        val sticky = TestSticky()
+        sticky.watchBook = 66
+        sticky.watchChapter = 20
+        val refs = ReferenceWatcher.process("Мы читаем об этом в 21 главе Откровения.", sticky, now = 1_000L)
+        assertTrue(refs.isEmpty(), "book+chapter with no verse must not emit, got $refs")
+        assertEquals(66, sticky.watchBook)
+        assertEquals(21, sticky.watchChapter, "trailing same-book re-mention must not wipe the chapter just set")
+    }
+
+    @Test fun `bilingual track's own book re-mention does not wipe a chapter set earlier in the same call`() {
+        // Reconstructed from sticky-log (ts 2026-07-05T22:58:48.089Z: prevChapter=12, newChapter=null)
+        // using the exact quoted RU/EN fragments: the RU portion sets book=1/chapter=12/verse=5; the
+        // EN translation names "Genesis" again later (forcing an internal flush that correctly emits
+        // 1:12:5), then continues with English's keyword-before-number order ("in chapter 12", "in
+        // verse 5") whose "in" fillers wipe the buffered numbers before the segment-end flush — which
+        // must not null out chapter 12.
+        val sticky = TestSticky()
+        val refs = ReferenceWatcher.process(
+            "И вот в книге Бытия, в 12 главе, в 5 стихе.",
+            "And here in the book of Genesis, in chapter 12, in verse 5, there's a passage.",
+            sticky, now = 1_000L,
+        )
+        assertTrue(refs.any { it.triple() == Triple(1, 12, 5) }, "expected Genesis 1 12:5 to have been emitted, got $refs")
+        assertEquals(1, sticky.watchBook)
+        assertEquals(12, sticky.watchChapter, "EN track's own re-mention of the same book must not wipe chapter 12")
+    }
+
+    @Test fun `genuinely different book still resets a stale carried chapter`() {
+        // Guards the original behavior the buggy branch was defending: a real book change must still
+        // drop a stale chapter rather than let it bind to the new book.
+        val sticky = TestSticky()
+        sticky.watchBook = 27
+        sticky.watchChapter = 6
+        val refs = ReferenceWatcher.process("Послание к римлянам.", sticky, now = 1_000L)
+        assertTrue(refs.isEmpty())
+        assertEquals(45, sticky.watchBook, "book must switch to Romans")
+        assertEquals(null, sticky.watchChapter, "a genuinely new book must still drop the stale chapter")
+    }
+
+    // ── Ambiguous common-word RU aliases need corroborating context (2026-07-05 study) ─────────
+
+    @Test fun `bare dative Иоанну narrating the apostle does not hijack the sticky book`() {
+        // Real trace (sticky-log ts 2026-07-05T22:19:12.320Z): 66→43 false flip while narrating the
+        // apostle by name ("...and to John, God reveals..."), not citing the Gospel.
+        val sticky = TestSticky()
+        sticky.watchBook = 66
+        sticky.watchChapter = 21
+        ReferenceWatcher.process("И вот Иоанну Бог открывает", sticky, now = 1_000L)
+        assertEquals(66, sticky.watchBook, "narrating the apostle by name must not hijack the sticky book to John")
+        assertEquals(21, sticky.watchChapter)
+    }
+
+    @Test fun `bare dative Иоанну in unrelated narration does not hijack the sticky book`() {
+        // Real trace (sticky-log ts 2026-07-05T22:20:14.280Z): 25→43 false flip, full real sentence.
+        val sticky = TestSticky()
+        sticky.watchBook = 25
+        sticky.watchChapter = 3
+        ReferenceWatcher.process(
+            "Смотрите, вот такой интересный эпизод был предоставлен Иоанну.", sticky, now = 1_000L,
+        )
+        assertEquals(25, sticky.watchBook)
+        assertEquals(3, sticky.watchChapter)
+    }
+
+    @Test fun `бытие as ordinary vocabulary does not hijack the sticky book`() {
+        // Real trace (sticky-log ts 2026-07-05T22:21:28.143Z): 43→1 false flip; "бытие" here means
+        // "being/existence" (a machine-translation tail), not a citation of Genesis.
+        val sticky = TestSticky()
+        sticky.watchBook = 43
+        sticky.watchChapter = 3
+        ReferenceWatcher.process("вот-вот вступаем в то бытие.", sticky, now = 1_000L)
+        assertEquals(43, sticky.watchBook, "ordinary vocabulary \"бытие\" must not hijack the sticky book to Genesis")
+        assertEquals(3, sticky.watchChapter)
+    }
+
+    @Test fun `digit-adjacent бытие still resolves as Genesis`() {
+        val r = run("Бытие, 1 глава, 1 стих.").single()
+        assertEquals(Triple(1, 1, 1), r.triple())
+    }
+
+    @Test fun `digit-adjacent dative Иоанну still resolves when corroborated`() {
+        val r = run("Иоанну, 3 глава, 16 стих.").single()
+        assertEquals(Triple(43, 3, 16), r.triple())
+    }
+
+    @Test fun `marker-adjacent быт abbreviation still resolves as Genesis`() {
+        val sticky = TestSticky()
+        val refs = ReferenceWatcher.process("Книга Быт, 3 глава.", sticky, now = 1_000L)
+        assertTrue(refs.isEmpty())
+        assertEquals(1, sticky.watchBook, "«книга» marker should corroborate the abbreviation «Быт»")
+    }
+
+    // ── Mechanism-level generalization (2026-07-05 study §3) — test the underlying rule across
+    // many books/words instead of only the specific transcripts that first exposed it, so the next
+    // word/book that falls into the same trap is caught before a live session hits it. ──────────
+
+    @Test fun `same-book reflush preserves chapter across a range of books (general invariant)`() {
+        // Not just Revelation/Genesis (the two real traces) — the same "book named again, trailing
+        // its own chapter number, with no chapter of its own" shape must hold for any book.
+        val cases = listOf(
+            Triple(66, "Откровения", 21),
+            Triple(1, "Бытия", 12),
+            Triple(45, "Римлянам", 8),
+            Triple(40, "Матфея", 5),
+        )
+        for ((book, genitive, chapter) in cases) {
+            val sticky = TestSticky()
+            sticky.watchBook = book
+            sticky.watchChapter = 1 // a different "old" chapter, distinct from the one being set
+            val refs = ReferenceWatcher.process("Мы читаем об этом в $chapter главе $genitive.", sticky, now = 1_000L)
+            assertTrue(refs.isEmpty(), "book+chapter with no verse must not emit for book $book, got $refs")
+            assertEquals(book, sticky.watchBook, "book should stay $book")
+            assertEquals(chapter, sticky.watchChapter,
+                "chapter $chapter must survive the trailing same-book re-mention for book $book")
+        }
+    }
+
+    @Test fun `ambiguous alias table never hijacks the sticky book without corroborating context (fuzz)`() {
+        // Iterates ReferenceWatcher.AMBIGUOUS_BOOK_FORMS itself rather than hardcoding "иоанну"/
+        // "бытие" — any future word added to that table is automatically covered by this test with
+        // no extra work. Fixed seed for reproducibility; fillers deliberately contain no digits, no
+        // epistle markers, and no book names/aliases, so corroboration can never trigger by accident.
+        val fillers = listOf(
+            "сегодня", "хорошо", "конечно", "братья", "сестры", "давайте", "подумаем", "вместе",
+            "немного", "время", "место", "слово", "жизнь", "сердце", "истина", "путь", "человек",
+            "земля", "небо", "вода",
+        )
+        val rnd = Random(20260705)
+        for ((word, book) in ReferenceWatcher.AMBIGUOUS_BOOK_FORMS) {
+            repeat(50) {
+                val before = List(rnd.nextInt(4)) { fillers[rnd.nextInt(fillers.size)] }
+                val after = List(rnd.nextInt(4)) { fillers[rnd.nextInt(fillers.size)] }
+                val sentence = (before + word + after).joinToString(" ") + "."
+                val sticky = TestSticky()
+                sticky.watchBook = 45 // Romans — distinct from every AMBIGUOUS_BOOK_FORMS target book
+                sticky.watchChapter = 3
+                ReferenceWatcher.process(sentence, sticky, now = 1_000L)
+                assertEquals(45, sticky.watchBook,
+                    "bare \"$word\" with no corroboration must not hijack the sticky to book $book: \"$sentence\"")
+            }
+        }
+    }
+
+    @Test fun `ambiguous alias table resolves once corroborated by a nearby digit (fuzz)`() {
+        // Proves the corroboration gate isn't just permanently closed — same table, same fillers,
+        // this time with an adjacent chapter number.
+        val fillers = listOf("сегодня", "хорошо", "конечно", "братья", "сестры", "давайте")
+        val rnd = Random(20260705)
+        for ((word, book) in ReferenceWatcher.AMBIGUOUS_BOOK_FORMS) {
+            repeat(20) {
+                val before = List(rnd.nextInt(3)) { fillers[rnd.nextInt(fillers.size)] }
+                val chapterNum = rnd.nextInt(1, 20)
+                val sentence = (before + word + chapterNum.toString() + "глава").joinToString(" ") + "."
+                val sticky = TestSticky()
+                val refs = ReferenceWatcher.process(sentence, sticky, now = 1_000L)
+                assertTrue(refs.isEmpty(), "book+chapter alone must not emit, got $refs for \"$sentence\"")
+                assertEquals(book, sticky.watchBook, "digit-adjacent \"$word\" should resolve to book $book: \"$sentence\"")
+            }
+        }
+    }
+
+    // Real non-reference sentences confirmed benign in past sessions. Append newly-confirmed-benign
+    // trigger text here as future sessions surface it (in addition to, not instead of, a dedicated
+    // named test for any actual fix) — this list is meant to keep growing every session instead of
+    // coverage living only in one-off named tests. See TRAINING_PLAN.md Test Strategy.
+    private val NEGATIVE_CORPUS = listOf(
+        "вот-вот вступаем в то бытие.",
+        "Смотрите, вот такой интересный эпизод был предоставлен Иоанну.",
+        "Затем вся молодежь выйдет и споет «Когда Христос меня простил».",
+        "Как можно курить в переполненном автобусе, где много детей?",
+        "Мы поем ее часто в нашей Второй Одесской Церкви.",
+    )
+
+    @Test fun `growing negative corpus never emits or hijacks an unset sticky book`() {
+        for (line in NEGATIVE_CORPUS) {
+            val sticky = TestSticky()
+            val refs = ReferenceWatcher.process(line, sticky, now = 1_000L)
+            assertTrue(refs.isEmpty(), "negative-corpus line should not emit: \"$line\" -> $refs")
+            assertEquals(null, sticky.watchBook, "negative-corpus line should not seed an unset sticky book: \"$line\"")
+        }
     }
 
     // ── Bilingual transcript/translation disagreement (mistranslated book) ─────
