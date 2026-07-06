@@ -265,6 +265,17 @@ the gap table above) that manual review across two full sessions had missed enti
 all, already works today regardless of history — `ReverseLookup.search()` runs BM25 over the whole Bible
 on every utterance already, independent of the sticky/history mechanism above.)
 
+**Consuming-app context** (2026-07 — no engine change, documented here since it affects how urgent the
+gaps above are): ChurchPresenter's "Follow Along" auto-follow feature now tiers its go-live decision by
+`matchType` (see `AGENT.md`'s "Bible Follow Along — Tiered Auto-Follow" note in the main repo). Only
+`explicit`/`continuation` detections push to the output screen automatically; `chapter-scan`/
+`chapter-history`/`reverse` now just stage the browse view for operator confirmation. Practical effect:
+false positives whose `matchType` is `reverse`/`chapter-scan`/`chapter-history` (the short-alias/
+stem-overmatch gaps above, e.g. "song"/"откр"/"повторить") can no longer put a wrong verse live
+unattended during a real service — they're still worth fixing for recall/precision, but they're no
+longer a live-service safety issue. An `explicit`/`continuation` false positive still goes live
+instantly, so those two match types remain the highest-stakes category to get right.
+
 ---
 
 ## Critical Gotchas: Book Numbering
