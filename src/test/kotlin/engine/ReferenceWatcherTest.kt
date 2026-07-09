@@ -749,4 +749,38 @@ class ReferenceWatcherTest {
             "ё-spelled Матфёя should fold to Матфея and resolve, got $refs"
         )
     }
+
+    // ── Keyword-first citations (2026-07-09: keywords now bind the FOLLOWING number too) ────────
+
+    @Test fun `keyword-first russian citation parses in order`() {
+        // Was inverted before the pending-keyword fix: chapter=3, verse=26.
+        val refs = run("Матфея глава 26 стих 3.")
+        assertTrue(
+            refs.any { it.bookNum == 40 && it.chapter == 26 && it.verseStart == 3 },
+            "глава 26 стих 3 must parse as 26:3, got $refs"
+        )
+    }
+
+    @Test fun `keyword-first english citation parses in order`() {
+        // The remaining half of the TRAINING_PLAN keyword-order gap.
+        val refs = run("Job chapter 3 verse 2.")
+        assertTrue(
+            refs.any { it.bookNum == 18 && it.chapter == 3 && it.verseStart == 2 },
+            "Job chapter 3 verse 2 must parse as 3:2, got $refs"
+        )
+    }
+
+    @Test fun `number-first forms are unchanged by pending keywords`() {
+        val refs = run("Матфея 26 глава 3 стих.")
+        assertTrue(
+            refs.any { it.bookNum == 40 && it.chapter == 26 && it.verseStart == 3 },
+            "26 глава 3 стих must still parse as 26:3, got $refs"
+        )
+    }
+
+    @Test fun `pending keyword does not bind across prose`() {
+        // A keyword followed by filler then an unrelated number must not fabricate a chapter.
+        val refs = run("В этой главе, друзья мои, 26 человек упомянуты.")
+        assertTrue(refs.isEmpty(), "keyword across prose must not bind, got $refs")
+    }
 }

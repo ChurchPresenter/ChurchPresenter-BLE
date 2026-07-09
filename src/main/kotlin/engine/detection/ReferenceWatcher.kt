@@ -389,6 +389,12 @@ object ReferenceWatcher {
         var keywordSeen = false
         var colonSeen = false
         var rangeArmed = false
+        // Keyword-first binding: a chapter/verse keyword arriving BEFORE its number
+        // ("глава 26 стих 3", "Job chapter 3 verse 2") marks the NEXT number as bound. Without
+        // this, keywords only consumed numbers that preceded them and keyword-first citations
+        // parsed inverted (chapter/verse swapped) in every language.
+        var pendingChapKw = false
+        var pendingVerseKw = false
         // numbers buffered since the last keyword/colon, each tagged whether a range preceded it
         val recent = ArrayList<Pair<Int, Boolean>>()
 
@@ -419,6 +425,7 @@ object ReferenceWatcher {
             }
             emit(curBook, chapter, verseStart, verseEnd, keywordSeen, sticky, now, out)
             chapter = null; verseStart = null; verseEnd = null; keywordSeen = false; colonSeen = false; rangeArmed = false
+            pendingChapKw = false; pendingVerseKw = false
         }
 
         for (a in atoms) {
@@ -433,13 +440,23 @@ object ReferenceWatcher {
                     if (attachToPending) curBook = a.num
                     else { flush(); curBook = a.num }
                 }
-                is Atom.ChapKw -> { assignChapterFromRecent(); keywordSeen = true }
-                is Atom.VerseKw -> { assignVersesFromRecent(); keywordSeen = true }
+                is Atom.ChapKw -> {
+                    if (recent.isNotEmpty()) assignChapterFromRecent() else pendingChapKw = true
+                    keywordSeen = true
+                }
+                is Atom.VerseKw -> {
+                    if (recent.isNotEmpty()) assignVersesFromRecent() else pendingVerseKw = true
+                    keywordSeen = true
+                }
                 is Atom.Colon -> { assignChapterFromRecent(); colonSeen = true }
                 is Atom.Range -> { rangeArmed = true }
                 is Atom.From -> { /* "с N по M": start of a verse range — no-op, recent handles it */ }
                 is Atom.ListSep -> { /* keep recent; lists don't form ranges */ }
-                is Atom.Num -> { recent.add(a.value to rangeArmed); rangeArmed = false }
+                is Atom.Num -> when {
+                    pendingChapKw -> { chapter = a.value; pendingChapKw = false; rangeArmed = false }
+                    pendingVerseKw && verseStart == null -> { verseStart = a.value; pendingVerseKw = false; rangeArmed = false }
+                    else -> { recent.add(a.value to rangeArmed); rangeArmed = false }
+                }
                 is Atom.Filler -> {
                     // A colon already bound these numbers to the reference ("Исайя 26:3 написано
                     // «…»", "Isaiah 26:3 says …") — trailing prose must not wipe the buffered
@@ -447,6 +464,9 @@ object ReferenceWatcher {
                     // ("Марк 5 человек") — drop as before. Deliberately colon-only, NOT
                     // keywordSeen: "Матфея 3 глава … 5 причин" must not turn 5 into a verse.
                     if (colonSeen && recent.isNotEmpty()) assignVersesFromRecent() else recent.clear()
+                    // A pending keyword must not bind across prose either ("глава, друзья, 26").
+                    pendingChapKw = false
+                    pendingVerseKw = false
                     rangeArmed = false
                 }
             }
