@@ -27,8 +27,11 @@ object ContinuationEngine {
      * together; widening the candidate pool to the whole history raises that ambiguity risk, which is
      * exactly why the gate matters here, not less.
      */
-    fun checkChapterScope(state: UtteranceState, translation: EngineTranslation): ContinuationResult? {
-        val now = System.currentTimeMillis()
+    fun checkChapterScope(
+        state: UtteranceState,
+        translation: EngineTranslation,
+        now: Long = System.currentTimeMillis(),
+    ): ContinuationResult? {
         val stickyValid = state.watchExpiresAt == 0L || now <= state.watchExpiresAt
         val candidates = buildSet {
             if (stickyValid) {
@@ -59,9 +62,9 @@ object ContinuationEngine {
     fun check(
         state: UtteranceState,
         translations: List<EngineTranslation>,
+        now: Long = System.currentTimeMillis(),
     ): ContinuationResult? {
         val lastRef = state.lastDetected ?: return null
-        val now = System.currentTimeMillis()
         if (now - state.lastDetectedAt > Config.continuationTimeoutMs) return null
 
         val query = "${state.transcript} ${state.translation}".trim()

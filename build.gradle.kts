@@ -50,6 +50,9 @@ tasks.test {
     // if unset).
     System.getProperty("replay.db")?.let { systemProperty("replay.db", it) }
     System.getProperty("replay.fixture")?.let { systemProperty("replay.fixture", it) }
+    System.getProperty("replay.bibles")?.let { systemProperty("replay.bibles", it) }
+    System.getProperty("replay.level")?.let { systemProperty("replay.level", it) }
+    System.getProperty("replay.updateGolden")?.let { systemProperty("replay.updateGolden", it) }
 }
 
 tasks.jar {
@@ -58,6 +61,13 @@ tasks.jar {
     }
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+tasks.register<JavaExec>("replayEval") {
+    group = "verification"
+    description = "Replays a recorded STT service .db through the pipeline and scores it against operator ground truth (see DbReplayTest/ReplayEval)."
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("engine.replay.ReplayEval")
 }
 
 tasks.register<JavaExec>("stickyAudit") {

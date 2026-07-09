@@ -51,7 +51,13 @@ data class ScriptureEvent(
     val stickyChapter: Int? = null,    // sticky context chapter when this fired
 )
 
-class DetectionEngine(private val translations: List<EngineTranslation>) {
+class DetectionEngine(
+    private val translations: List<EngineTranslation>,
+    // Injectable time source so the replay harness (DbReplayTest) can drive every time-dependent
+    // gate (sticky TTL, dedup TTL, continuation timeout, re-emit cooldown) from recorded ts_ms
+    // values — making a replayed session fully deterministic. Production uses the wall clock.
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
 
     // Index every loaded translation by default; an explicit Config.defaultTranslations allow-list
     // can restrict it (e.g. to cap memory when many large translations are present).
@@ -59,7 +65,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         if (Config.defaultTranslations.isEmpty()) translations
         else translations.filter { it.id in Config.defaultTranslations }.ifEmpty { translations }
     private val index = BibleIndex(indexTranslations)
-    private val stabilizer = Stabilizer()
+    private val stabilizer = Stabilizer(clock)
     private val utterances = HashMap<String, UtteranceState>()
 
     fun processTranscription(
@@ -76,7 +82,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         if (segmentId != null) state.segmentId = segmentId
         if (startTime != null) state.sttStartTime = startTime
         applySessionId(state, sessionId)
-        state.updatedAt = System.currentTimeMillis()
+        state.updatedAt = clock()
         return runDetection(state)
     }
 
@@ -94,7 +100,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         if (segmentId != null) state.segmentId = segmentId
         if (startTime != null) state.sttStartTime = startTime
         applySessionId(state, sessionId)
-        state.updatedAt = System.currentTimeMillis()
+        state.updatedAt = clock()
         return runDetection(state)
     }
 
@@ -110,7 +116,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
 
     private fun runDetection(state: UtteranceState): List<ScriptureEvent> {
         val combined = "${state.transcript} ${state.translation}".trim()
-        val now = System.currentTimeMillis()
+        val now = clock()
 
         // 1. Explicit / sticky references (stateful watcher). May yield several per utterance.
         //    Suppressed on music segments (sung lyrics aren't references being looked up).
@@ -187,8 +193,8 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         //    than 3 verses within the same chapter), fall back to scoring every verse in the known
         //    sticky chapter, so a bare "book + chapter" announcement doesn't need an explicit verse
         //    citation to be found once the reading actually starts.
-        val sequential = ContinuationEngine.check(state, translations)
-        val cont = sequential ?: ContinuationEngine.checkChapterScope(state, pickTranslation(state.transcript))
+        val sequential = ContinuationEngine.check(state, translations, now)
+        val cont = sequential ?: ContinuationEngine.checkChapterScope(state, pickTranslation(state.transcript), now)
         if (cont != null) {
             // Kept distinct from "continuation" in the detection log so the paths stay visually
             // separable for training/triage: a chapter-wide scan is a materially different signal
@@ -237,7 +243,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         // they swamped the candidate log and carried no tuning signal. Keep only true near-misses
         // ("below-confidence" / "low-agreement"); real misses are recovered offline against ground truth.
         if (reason == "deduped") return
-        val stamped = stamp(state, event, System.currentTimeMillis())
+        val stamped = stamp(state, event, clock())
         DetectionLogger.logCandidate(state.transcript, state.translation, stamped, reason)
     }
 
@@ -245,7 +251,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
         // Stamp the triggering STT segment + per-track corroboration onto every emitted event here —
         // the single funnel for all detection paths — so both the broadcast and the detection log
         // carry the correlation key and the transcription/translation markers.
-        val now = System.currentTimeMillis()
+        val now = clock()
         val stamped = events.map { stamp(state, it, now) }
         for (e in stamped) DetectionLogger.log(state.transcript, state.translation, e)
         return stamped
@@ -383,7 +389,7 @@ class DetectionEngine(private val translations: List<EngineTranslation>) {
             chapter = event.reference.chapter,
             verseStart = event.reference.verseStart,
         )
-        state.lastDetectedAt = System.currentTimeMillis()
+        state.lastDetectedAt = clock()
         state.lastTranslationId = translations.find { it.abbreviation == event.translation }?.id ?: ""
         state.lastConfidence = event.confidence
     }
