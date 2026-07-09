@@ -32,6 +32,14 @@ object Config {
     // Low-volume (sticky changes are infrequent, not per-utterance); same default spirit as logCandidates.
     var logStickyChanges = System.getProperty("engine.logStickyChanges")?.toBooleanStrictOrNull() ?: true
     val continuationTimeoutMs = 30_000L
+
+    // Sequential continuation acceptance: fraction of the CANDIDATE VERSE's words that must be
+    // present in the text window ("verse-side coverage", AgreementScorer.coverage). Verse-side —
+    // not query-side — because the 2-segment sliding window dilutes a query-normalized overlap to
+    // a ~50% ceiling even when a verse is read verbatim (the documented sequential-reading FN
+    // class; Matthew 9:37 in the 2026-07-08 session). Verses with < 4 distinct scoring words must
+    // be fully covered instead (spurious-full-coverage guard).
+    var continuationMinCoverage = 0.5
     val dedupWindow = 32
     // Suppress an identical reference only within this window (time-based, replaces the old fixed
     // count-only window) so a passage read again later can re-fire.

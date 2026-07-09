@@ -121,4 +121,44 @@ class ContinuationEngineTest {
         state.touchChapterHistory(9, 15) // touch again — must move to the end, not duplicate
         assertEquals(listOf(40 to 3, 9 to 15), state.chapterHistory.toList())
     }
+
+    // ── Sequential check: verse-side coverage (2026-07-09, sequential-reading FN fix) ──────────
+
+    private fun stateWithLastDetected(t: EngineTranslation, book: Int, chapter: Int, verse: Int,
+                                      transcript: String, now: Long): UtteranceState {
+        val state = UtteranceState(id = "test")
+        state.lastDetected = engine.engine.UtteranceLastRef(book, chapter, verse)
+        state.lastDetectedAt = now
+        state.lastTranslationId = t.id
+        state.transcript = transcript
+        return state
+    }
+
+    @Test fun `verse fully read inside a padded window matches sequentially`() {
+        // The old query-normalized overlap scored ~0.43 here (6 verse words / 14 window words)
+        // and failed the 0.35... actually passed 0.35 — use a wider window to model the real
+        // failure: 6/18 ≈ 0.33 < 0.35 failed, while verse-side coverage is 1.0.
+        val t = fixture(listOf(
+            EngineVerse("9-15-22", 9, 15, 22, "previous verse words here now", false),
+            EngineVerse("9-15-23", 9, 15, 23, "alpha beta gamma delta epsilon zeta", false),
+        ))
+        val now = 1_000_000L
+        val window = "one two three four five six seven eight nine ten eleven twelve " +
+            "alpha beta gamma delta epsilon zeta"
+        val state = stateWithLastDetected(t, 9, 15, 22, window, now)
+        val result = ContinuationEngine.check(state, listOf(t), now + 5_000)
+        assertNotNull(result, "verse fully present in a padded window must match")
+        assertEquals(23, result.verse.verse)
+    }
+
+    @Test fun `short verses require full coverage`() {
+        // 3 distinct scoring words -> floor is 1.0; two of three present must NOT match.
+        val t = fixture(listOf(
+            EngineVerse("9-15-22", 9, 15, 22, "previous verse words here now", false),
+            EngineVerse("9-15-23", 9, 15, 23, "alpha beta gamma", false),
+        ))
+        val now = 1_000_000L
+        val state = stateWithLastDetected(t, 9, 15, 22, "some prose alpha beta only", now)
+        assertNull(ContinuationEngine.check(state, listOf(t), now + 5_000))
+    }
 }

@@ -74,24 +74,25 @@ object ContinuationEngine {
         val lastVerse = t.lookupVerse(lastRef.bookNum, lastRef.chapter, lastRef.verseStart)
             ?: return null
 
-        // Look up the next 3 candidate verses
+        // Look up the next 3 candidate verses. Scored by VERSE-side coverage (how much of the
+        // candidate verse is present in the window) — see Config.continuationMinCoverage for why
+        // query-side overlap systematically under-scored verbatim verse-by-verse reading.
         var candidate: EngineVerse? = t.nextVerse(lastVerse)
         repeat(3) {
             val c = candidate ?: return@repeat
-            val score = wordOverlap(c.text, query)
-            if (score >= 0.35) {
-                return ContinuationResult(c, t, score.coerceIn(0.5, 0.88))
+            val coverage = AgreementScorer.coverage(c.text, query)
+            val distinctVerseWords = distinctScoringWords(c.text)
+            val floor = if (distinctVerseWords >= 4) Config.continuationMinCoverage else 1.0
+            if (coverage >= floor) {
+                return ContinuationResult(c, t, coverage.coerceIn(0.5, 0.88))
             }
             candidate = t.nextVerse(c)
         }
         return null
     }
 
-    private fun wordOverlap(verseText: String, query: String): Double {
-        // Same letter-class + ё-folding rationale as AgreementScorer.tokenize.
-        val vWords = verseText.lowercase().replace('ё', 'е').split(Regex("[^\\p{L}]+")).filter { it.length >= 3 }.toSet()
-        val qWords = query.lowercase().replace('ё', 'е').split(Regex("[^\\p{L}]+")).filter { it.length >= 3 }.toSet()
-        if (qWords.isEmpty() || vWords.isEmpty()) return 0.0
-        return vWords.intersect(qWords).size.toDouble() / qWords.size
-    }
+    /** Distinct words the coverage metric would score for [text] — the short-verse guard input. */
+    private fun distinctScoringWords(text: String): Int =
+        text.lowercase().replace('ё', 'е').split(Regex("[^\\p{L}]+")).filter { it.length >= 3 }.toSet().size
+
 }
