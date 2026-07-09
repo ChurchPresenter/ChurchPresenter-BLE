@@ -63,8 +63,25 @@ object Config {
     // than the global reverse lookup without raising false-positive risk — protected instead by the
     // margin-over-runner-up gate below (same safety pattern as reverseMinScoreRatio). Starting values;
     // tune against real training data.
-    var chapterScopeMinAgreement = 0.10
+    // Raised 0.10 -> 0.20 (2026-07-09): the 2026-07-08 session's replay showed 94 chapter-history
+    // emissions with ZERO true positives at the old floor — pure operator chip spam. Values below
+    // remain provisional until more services are recorded; the structural gates (candidate cap +
+    // coverage floors) carry most of the cut.
+    var chapterScopeMinAgreement = 0.20
     var chapterScopeMinRatio = 1.5
+
+    // Chapter-scope candidate pool: only the current sticky chapter plus the N most recently
+    // visited chapters — a sermon's active context, not every chapter touched all service
+    // (chapterHistory itself stays unbounded for diagnostics; only the SCAN is capped).
+    var chapterHistoryMaxCandidates = 5
+
+    // Verse-side coverage floors for the chapter-scope match (same metric as
+    // continuationMinCoverage): the top candidate verse must be substantially PRESENT in the
+    // window, not merely share a few words. Stricter for a chapter other than the current
+    // sticky — revisiting an earlier chapter is rarer and riskier than matching the chapter
+    // we're already expecting (see ContinuationEngine doc).
+    var chapterScopeMinCoverage = 0.45
+    var chapterHistoryMinCoverage = 0.6
 
     // How long an announced book+chapter stays "sticky" for verse-by-verse reading. Generous by
     // default because expositional reads span minutes; shrunk for aggressive/rapid-fire cadence.

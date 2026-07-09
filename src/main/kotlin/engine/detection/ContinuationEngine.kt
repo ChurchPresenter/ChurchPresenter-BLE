@@ -39,7 +39,10 @@ object ContinuationEngine {
                 val chapter = state.watchChapter
                 if (book != null && chapter != null) add(book to chapter)
             }
-            addAll(state.chapterHistory)
+            // Only the most recently visited chapters — the sermon's ACTIVE context. Scanning
+            // every chapter touched all service produced two orders of magnitude more junk than
+            // hits on real data (94 emissions / 0 TPs in the 2026-07-08 replay).
+            addAll(state.chapterHistory.toList().takeLast(Config.chapterHistoryMaxCandidates))
         }
         if (candidates.isEmpty()) return null
 
@@ -55,6 +58,15 @@ object ContinuationEngine {
         val runnerUp = scored.getOrNull(1)
         val ratio = if (runnerUp != null && runnerUp.second > 0) top.second / runnerUp.second else Double.MAX_VALUE
         if (runnerUp != null && ratio < Config.chapterScopeMinRatio) return null // ambiguous — stay silent
+
+        // Verse-side coverage floor (same metric as the sequential check): the winning verse
+        // must be substantially present in the window. Stricter when it comes from a chapter
+        // OTHER than the current sticky (chapter-history) than from the expected one.
+        val isCurrentSticky = stickyValid &&
+            top.first.bookNum == state.watchBook && top.first.chapter == state.watchChapter
+        val coverage = AgreementScorer.coverage(top.first.text, query)
+        val floor = if (isCurrentSticky) Config.chapterScopeMinCoverage else Config.chapterHistoryMinCoverage
+        if (coverage < floor) return null
 
         return ContinuationResult(top.first, translation, top.second.coerceIn(0.55, 0.85))
     }
