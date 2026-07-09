@@ -468,6 +468,13 @@ class ReferenceWatcherTest {
         "Затем вся молодежь выйдет и споет «Когда Христос меня простил».",
         "Как можно курить в переполненном автобусе, где много детей?",
         "Мы поем ее часто в нашей Второй Одесской Церкви.",
+        // Documented Known Engine Gaps (TRAINING_PLAN): stem over-extension + short real-word
+        // aliases in prose — closed by classify's over-extension/short-alias gates.
+        "он удостоил его тому, что открылся народу.",
+        "нужно повторить этот отрывок еще раз.",
+        "we will sing a song together this morning.",
+        "he did a good job on the presentation.",
+        "при этом мы видим важную деталь.",
     )
 
     @Test fun `growing negative corpus never emits or hijacks an unset sticky book`() {
@@ -629,4 +636,56 @@ class ReferenceWatcherTest {
         }
     }
 
+
+    // ── FP gates: stem over-extension + short aliases (Known Engine Gaps, closed 2026-07) ──────
+
+    @Test fun `short alias with adjacent number still resolves`() {
+        // Gate B must not cost recall when the citation carries its number nearby.
+        // (EN keyword-after-number forms like "Job chapter 3 verse 2" mis-parse for a
+        // pre-existing, unrelated reason — see the interpreter keyword-order gap note in
+        // TRAINING_PLAN.md; these tests use forms the interpreter handles today.)
+        val jobRefs = run("Job 3:2")
+        assertTrue(jobRefs.any { it.bookNum == 18 && it.chapter == 3 }, "Job 3:2 should resolve, got $jobRefs")
+        val revRefs = run("откр 3 глава 12 стих.")
+        assertTrue(revRefs.any { it.bookNum == 66 && it.chapter == 3 }, "Rev 3:12 should resolve, got $revRefs")
+    }
+
+    @Test fun `multi-word short-book aliases are not gated`() {
+        val refs = run("Song of Solomon 2:1")
+        assertTrue(refs.any { it.bookNum == 22 && it.chapter == 2 }, "Song of Solomon 2:1 should resolve, got $refs")
+    }
+
+    @Test fun `normal grammatical stem endings are not gated`() {
+        // Extension of 1-2 chars over the stem (ordinary inflection) stays ungated.
+        val refs = run("Матфея 5 глава 3 стих.")
+        assertTrue(refs.any { it.bookNum == 40 && it.chapter == 5 }, "Matthew 5:3 should resolve, got $refs")
+    }
+
+    @Test fun `over-extended stems in prose never hijack the sticky`() {
+        // "открылся"/"повторить" share prefixes with book stems; bare in prose they must
+        // neither emit nor move the sticky book (the sticky-pollution path behind many
+        // chapter-history FPs in the recorded 2026-07-08 session).
+        val sticky = TestSticky()
+        ReferenceWatcher.process("Послание к римлянам, 6 глава, 4 стих.", sticky, 1_000L)
+        val bookBefore = sticky.watchBook
+        ReferenceWatcher.process("он удостоил его тому, что открылся народу.", sticky, 2_000L)
+        ReferenceWatcher.process("нужно повторить этот отрывок.", sticky, 3_000L)
+        assertEquals(bookBefore, sticky.watchBook, "prose stem look-alikes must not move the sticky book")
+    }
+
+    @Test fun `short aliases in bare prose never emit or hijack - fuzz`() {
+        // Mechanism-level guard over every registered single-token alias of length <= 4:
+        // bare in prose (no digits, no markers) it must not emit; framing it as a citation
+        // with a number must still resolve to SOME book (recall check on a sample).
+        val shortAliases = BookResolver.ALIASES.keys.filter { !it.contains(' ') && it.length in 3..4 }
+        assertTrue(shortAliases.isNotEmpty())
+        for (alias in shortAliases) {
+            val refs = run("we were talking about $alias yesterday evening.")
+            assertTrue(refs.isEmpty(), "bare short alias '$alias' emitted $refs")
+        }
+        for (alias in shortAliases.shuffled(kotlin.random.Random(20260709)).take(10)) {
+            val refs = run("$alias 3 глава 2 стих.")
+            assertTrue(refs.isNotEmpty(), "corroborated short alias '$alias' should resolve")
+        }
+    }
 }

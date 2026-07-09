@@ -110,7 +110,7 @@ private fun classify(row: StickyRow): Verdict {
 
     // Reachable only via the inflection-tolerant stem fallback — measure how far the matched word
     // extends past the shortest stem that explains it.
-    val stemToken = tokens.firstOrNull { BookResolver.resolveStem(it) == newBook }
+    val stemToken = tokens.firstOrNull { BookResolver.resolveStem(it)?.bookNum == newBook }
     if (stemToken != null) {
         val extension = extensionOverBestStem(stemToken, newBook)
         return if (extension >= 3) {

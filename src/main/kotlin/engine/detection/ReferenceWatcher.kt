@@ -56,6 +56,13 @@ object ReferenceWatcher {
     private val RANGE_WORDS = setOf("по", "до", "через", "bis", "to", "through", "hasta", "até", "ate")
     private val LIST_WORDS = setOf("и", "или", "потом", "затем", "then", "and")
     private val FROM_WORDS = setOf("с", "со", "from", "desde")
+
+    // Gate thresholds for prose-vs-citation disambiguation (see classify). SHORT_ALIAS_MAX_LEN:
+    // single-token exact aliases at or under this length ("job", "при") are common words in
+    // prose. STEM_MAX_EXTENSION_UNCORROBORATED: a token this many chars longer than its matched
+    // stem is treated as vocabulary unless corroborated (StickyAudit's risky band).
+    private const val SHORT_ALIAS_MAX_LEN = 4
+    private const val STEM_MAX_EXTENSION_UNCORROBORATED = 3
     // Bare cardinal "one" (count) — distinct from the ordinal (первый/first) and the digit "1". As
     // a chapter/verse number a real reference uses the ordinal or the digit, so "один стих" / "one
     // verse" means "one verse" (a quantity), never "verse one". Treated as filler so it can't bind
@@ -241,10 +248,14 @@ object ReferenceWatcher {
                 // prose (the translation track flows through here too), hijacking the sticky book.
                 // Multi-word aliases always carry a space (length ≥ 3) and are kept.
                 if (bookNum != null && (len > 1 || phrase.length >= 3)) {
-                    // Ambiguous common-word aliases (bare "иоанну"/"бытие"…) need corroborating
-                    // context — a chapter/verse digit nearby or an explicit citation marker — or
-                    // they're just ordinary vocabulary/narration, not a book being named.
-                    if (len == 1 && AMBIGUOUS_BOOK_FORMS[phrase] != null &&
+                    // Ambiguous common-word aliases (bare "иоанну"/"бытие"…) AND short real-word
+                    // aliases ("job", "song", "при", "откр" — ≤ SHORT_ALIAS_MAX_LEN chars) need
+                    // corroborating context — a chapter/verse digit nearby or an explicit citation
+                    // marker — or they're just ordinary vocabulary/narration, not a book being
+                    // named. A genuine spoken citation via a short alias essentially always has
+                    // the number within reach ("Job chapter 3"), so recall survives the gate.
+                    if (len == 1 &&
+                        (AMBIGUOUS_BOOK_FORMS[phrase] != null || phrase.length <= SHORT_ALIAS_MAX_LEN) &&
                         !hasAmbiguousBookCorroboration(tokens, i)
                     ) {
                         break
@@ -263,9 +274,17 @@ object ReferenceWatcher {
             if (tok != ":" && tok != "-" && !isChapKw(tok) && !isVerseKw(tok) &&
                 tok !in RANGE_WORDS && tok !in LIST_WORDS && NumberWords.parseToken(tok) == null
             ) {
-                BookResolver.resolveStem(tok)?.let { bookNum ->
-                    val ambiguous = AMBIGUOUS_BOOK_FORMS[tok] != null && !hasAmbiguousBookCorroboration(tokens, i)
-                    if (!ambiguous) { atoms.add(Atom.Book(bookNum)); i++; matched = true }
+                BookResolver.resolveStem(tok)?.let { match ->
+                    // Over-extension gate: a token much longer than the alias stem it matched is
+                    // usually ordinary vocabulary sharing a prefix ("открылся"→"откр",
+                    // "повторить"→a Deuteronomy stem), not an inflected book name — real
+                    // grammatical endings extend a stem by 1-2 chars (Матфея, Даниила). Beyond
+                    // that, require the same corroboration ambiguous aliases need. The threshold
+                    // matches StickyAudit's empirically-validated risky band (extension >= 3).
+                    val overExtended = tok.length - match.stem.length >= STEM_MAX_EXTENSION_UNCORROBORATED
+                    val needsCorroboration = overExtended || AMBIGUOUS_BOOK_FORMS[tok] != null
+                    val gated = needsCorroboration && !hasAmbiguousBookCorroboration(tokens, i)
+                    if (!gated) { atoms.add(Atom.Book(match.bookNum)); i++; matched = true }
                 }
             }
             if (matched) continue

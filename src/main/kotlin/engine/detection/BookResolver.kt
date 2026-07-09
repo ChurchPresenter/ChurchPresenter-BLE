@@ -603,8 +603,13 @@ object BookResolver {
             .sortedByDescending { it.first.length }
 
     /** Resolves a single token to a book number by inflection-tolerant stem prefix, or null. */
-    fun resolveStem(token: String): Int? =
-        _stemIndex.firstOrNull { token.length >= it.first.length && token.startsWith(it.first) }?.second
+    /** A stem-prefix hit: which book and via which stem — the caller gates on how much longer
+     *  the token is than the matched stem (see ReferenceWatcher.classify's over-extension gate). */
+    data class StemMatch(val bookNum: Int, val stem: String)
+
+    fun resolveStem(token: String): StemMatch? =
+        _stemIndex.firstOrNull { token.length >= it.first.length && token.startsWith(it.first) }
+            ?.let { StemMatch(it.second, it.first) }
 
     // Called once at startup with (bookNum, bookName) pairs from all loaded SPB files.
     // Adds any name not already in the static alias table so every SPB language

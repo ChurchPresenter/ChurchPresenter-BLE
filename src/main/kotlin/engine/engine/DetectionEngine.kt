@@ -4,6 +4,7 @@ import engine.Config
 import engine.bible.BibleIndex
 import engine.bible.EngineTranslation
 import engine.bible.EngineVerse
+import engine.bible.Script
 import engine.detection.ContinuationEngine
 import engine.detection.ReferenceWatcher
 import engine.detection.ReverseLookup
@@ -194,7 +195,7 @@ class DetectionEngine(
         //    sticky chapter, so a bare "book + chapter" announcement doesn't need an explicit verse
         //    citation to be found once the reading actually starts.
         val sequential = ContinuationEngine.check(state, translations, now)
-        val cont = sequential ?: ContinuationEngine.checkChapterScope(state, pickTranslation(state.transcript), now)
+        val cont = sequential ?: ContinuationEngine.checkChapterScope(state, pickTranslation(state), now)
         if (cont != null) {
             // Kept distinct from "continuation" in the detection log so the paths stay visually
             // separable for training/triage: a chapter-wide scan is a materially different signal
@@ -294,18 +295,20 @@ class DetectionEngine(
     }
 
     private fun buildRefEvent(state: UtteranceState, ref: ReferenceWatcher.Ref): ScriptureEvent? {
-        val t = pickTranslation(state.transcript)
-        val verseStart = ref.verseStart ?: 1
+        val t = pickTranslation(state)
+        // Fail closed on both lookups: never fabricate a verse the speaker didn't cite. A null
+        // verseStart must not become "verse 1", and a verse number that doesn't exist in this
+        // translation (misheard number, versification mismatch) must not silently substitute the
+        // chapter's first verse — this event can go live unattended at 0.95 confidence.
+        val verseStart = ref.verseStart ?: return null
         val verse = t.lookupVerse(ref.bookNum, ref.chapter, verseStart)
             ?.takeIf { !it.isHeader }
-            ?: t.firstContentVerse(ref.bookNum, ref.chapter)
             ?: return null
         val verseEnd = ref.verseEnd?.takeIf { it > verse.verse }
         val endCode = verseEnd?.let { t.lookupVerse(ref.bookNum, ref.chapter, it)?.code }
         val bookName = t.bookName(ref.bookNum)
         val displayRef = if (verseEnd != null) "$bookName ${ref.chapter}:${verse.verse}-$verseEnd"
-        else if (ref.verseStart != null) "$bookName ${ref.chapter}:${verse.verse}"
-        else "$bookName ${ref.chapter}"
+        else "$bookName ${ref.chapter}:${verse.verse}"
 
         // Tier 2 (sticky, no book spoken) is corroborated by the spoken verse content; tier 1
         // (explicit book+chapter+verse) is trusted outright.
@@ -372,15 +375,34 @@ class DetectionEngine(
         )
     }
 
-    private fun pickTranslation(transcript: String): EngineTranslation {
-        val hasCyrillic = transcript.any { it in 'Ѐ'..'ӿ' }
-        return if (hasCyrillic) {
-            translations.find { it.id == "RUS_RST" }
-                ?: translations.find { it.language == "RUS" }
-        } else {
-            translations.find { it.id == "ENG_KJV" }
-                ?: translations.find { it.language == "ENG" }
-        } ?: translations.first()
+    /**
+     * Picks the translation whose verse text is displayed for an explicit/sticky/chapter-scope
+     * detection: match the citing track's dominant script against each loaded bible's
+     * content-derived [Script] (ids/language fields are filename-derived and unreliable — the
+     * old hardcoded id lookup showed KJV text for Russian citations whenever filenames didn't
+     * happen to match "RUS_RST"/"ENG_KJV"). The transcript track is the citing track; the
+     * translation track only decides when the transcript is blank.
+     */
+    private fun pickTranslation(state: UtteranceState): EngineTranslation {
+        val citing = state.transcript.ifBlank { state.translation }
+        val script = dominantScript(citing)
+        return translations.firstOrNull { it.script == script } ?: translations.first()
+    }
+
+    private fun dominantScript(text: String): Script {
+        var latin = 0
+        var cyrillic = 0
+        for (ch in text) {
+            when {
+                ch in 'a'..'z' || ch in 'A'..'Z' -> latin++
+                ch in 'Ѐ'..'ӿ' -> cyrillic++
+            }
+        }
+        return when {
+            cyrillic > latin -> Script.CYRILLIC
+            latin > 0 -> Script.LATIN
+            else -> Script.OTHER
+        }
     }
 
     private fun recordDetection(state: UtteranceState, event: ScriptureEvent) {

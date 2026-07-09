@@ -15,12 +15,19 @@ data class EngineBook(
     val chapterCount: Int,
 )
 
+/** Dominant writing system of a translation's verse text — content-derived at load time
+ *  (SPB headers carry no reliable language field; ids/languages are filename-derived junk
+ *  like "KJV1769.SPB"), so translation display selection can match the spoken track's script
+ *  instead of trusting hardcoded ids. */
+enum class Script { LATIN, CYRILLIC, OTHER }
+
 data class EngineTranslation(
     val id: String,
     val title: String,
     val abbreviation: String,
     val language: String,
     val numbering: String,
+    val script: Script = Script.OTHER,
     val books: List<EngineBook>,
     val byBCV: Map<Triple<Int, Int, Int>, EngineVerse>,
     val byChapter: Map<Pair<Int, Int>, List<EngineVerse>>,

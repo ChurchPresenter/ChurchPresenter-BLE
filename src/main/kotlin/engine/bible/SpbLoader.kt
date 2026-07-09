@@ -177,11 +177,31 @@ object SpbLoader {
             abbreviation = abbreviation,
             language = lang,
             numbering = numberingFor(lang),
+            script = detectScript(verses),
             books = books,
             byBCV = byBCV,
             byChapter = byChapterMut,
             byCode = byCode,
         )
+    }
+
+    /** Content-derived dominant script: samples the first verses' letters (see [Script]). */
+    private fun detectScript(verses: List<EngineVerse>): Script {
+        var latin = 0
+        var cyrillic = 0
+        for (v in verses.asSequence().take(200)) {
+            for (ch in v.text) {
+                when {
+                    ch in 'a'..'z' || ch in 'A'..'Z' -> latin++
+                    ch in 'Ѐ'..'ӿ' -> cyrillic++
+                }
+            }
+        }
+        return when {
+            cyrillic > latin -> Script.CYRILLIC
+            latin > 0 -> Script.LATIN
+            else -> Script.OTHER
+        }
     }
 
     // Fast header-only scan — reads each SPB file only until the "-----" separator.
