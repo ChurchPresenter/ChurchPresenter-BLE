@@ -57,8 +57,16 @@ object ReverseLookup {
         if (candidates.isEmpty()) return null
 
         val top = candidates[0]
-        val ratio = if (candidates.size >= 2 && candidates[1].score > 0) {
-            candidates[0].score / candidates[1].score
+        // The ambiguity gate's competitor must be a DIFFERENT passage: when the sliding window
+        // straddles two adjacent verses, the neighbor scoring close is evidence FOR the passage,
+        // not against it (real case: a window covering Matthew 11:28-29 scored 11:29 at ratio
+        // 1.77 and wrongly suppressed 11:28). Same-chapter candidates are skipped when picking
+        // the competitor — the same principle as the cross-translation collapse above.
+        val competitor = candidates.drop(1).firstOrNull {
+            it.verse.bookNum != top.verse.bookNum || it.verse.chapter != top.verse.chapter
+        }
+        val ratio = if (competitor != null && competitor.score > 0) {
+            top.score / competitor.score
         } else {
             Double.MAX_VALUE
         }

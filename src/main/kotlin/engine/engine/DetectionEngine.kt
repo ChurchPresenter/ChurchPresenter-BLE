@@ -170,11 +170,38 @@ class DetectionEngine(
 
         // 2. Reverse BM25 lookup (gated by the client-selected level), validated against what was
         //    actually spoken so a spurious BM25 hit on a single rare word can't fire.
-        val reverse = if (Config.reverseEnabled) ReverseLookup.search(combined, index, translations) else null
+        //    Searched PER TRACK: ReverseLookup keeps only the last reverseWindowWords of its
+        //    query, so searching the concatenated transcript+translation structurally discarded
+        //    the transcript whenever the translation track was active (the tail was always
+        //    English) — the best gated hit across the two tracks wins instead.
+        val reverse = if (Config.reverseEnabled) {
+            listOfNotNull(
+                state.transcript.takeIf { it.isNotBlank() }?.let { ReverseLookup.search(it, index, translations) },
+                state.translation.takeIf { it.isNotBlank() }?.let { ReverseLookup.search(it, index, translations) },
+            ).maxByOrNull { it.confidence * 1_000_000 + it.score }
+        } else null
         if (reverse != null) {
             val t = translations.find { it.id == reverse.translationId } ?: return emptyList()
-            val verse = t.lookupVerse(reverse.bookNum, reverse.chapter, reverse.verse)
+            var verse = t.lookupVerse(reverse.bookNum, reverse.chapter, reverse.verse)
                 ?: return emptyList()
+            // Prefer the START of the contiguous covered passage: the reverse window keeps only
+            // the newest words, so when a reading straddles verses N-1 and N, BM25 favors N —
+            // but the passage (and the operator) started at N-1. Step back while the previous
+            // verse of the same chapter is itself substantially present in either track
+            // (real case: Matthew 11:28-29 read across one window; the engine offered 29,
+            // the operator wanted 28).
+            var backSteps = 0
+            while (backSteps < 2) {
+                val prev = t.lookupVerse(verse.bookNum, verse.chapter, verse.verse - 1)
+                    ?.takeIf { !it.isHeader } ?: break
+                val coverage = maxOf(
+                    AgreementScorer.coverage(prev.text, state.transcript),
+                    AgreementScorer.coverage(prev.text, state.translation),
+                )
+                if (coverage < Config.continuationMinCoverage) break
+                verse = prev
+                backSteps++
+            }
             val agreement = AgreementScorer.score(verse.text, state.transcript, state.translation)
             val event = buildEvent(
                 id = state.id,
