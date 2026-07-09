@@ -641,11 +641,10 @@ class ReferenceWatcherTest {
 
     @Test fun `short alias with adjacent number still resolves`() {
         // Gate B must not cost recall when the citation carries its number nearby.
-        // (EN keyword-after-number forms like "Job chapter 3 verse 2" mis-parse for a
-        // pre-existing, unrelated reason — see the interpreter keyword-order gap note in
-        // TRAINING_PLAN.md; these tests use forms the interpreter handles today.)
-        val jobRefs = run("Job 3:2")
-        assertTrue(jobRefs.any { it.bookNum == 18 && it.chapter == 3 }, "Job 3:2 should resolve, got $jobRefs")
+        // (EN keyword-after-number forms like "Job chapter 3 verse 2" still mis-parse for a
+        // pre-existing, unrelated reason — see the keyword-order gap note in TRAINING_PLAN.md.)
+        val jobRefs = run("Job 3:2 tells us more.")
+        assertTrue(jobRefs.any { it.bookNum == 18 && it.chapter == 3 && it.verseStart == 2 }, "Job 3:2 should resolve, got $jobRefs")
         val revRefs = run("откр 3 глава 12 стих.")
         assertTrue(revRefs.any { it.bookNum == 66 && it.chapter == 3 }, "Rev 3:12 should resolve, got $revRefs")
     }
@@ -687,5 +686,41 @@ class ReferenceWatcherTest {
             val refs = run("$alias 3 глава 2 стих.")
             assertTrue(refs.isNotEmpty(), "corroborated short alias '$alias' should resolve")
         }
+    }
+
+    // ── Colon-bound citations survive trailing prose (found via DB row 843, 2026-07-09) ────────
+
+    @Test fun `colon citation followed by prose keeps its verse`() {
+        // Real transcript row 843: explicit dot-form citation + the quoted verse text. The prose
+        // word after the citation used to wipe the buffered verse (name+count guard over-reach),
+        // downgrading an explicit tier-1 detection to a weak staged chapter-scan.
+        val ru = run("Исайя 26.3 написано «Твердого духом ты хранишь в совершенном мире».")
+        assertTrue(
+            ru.any { it.bookNum == 23 && it.chapter == 26 && it.verseStart == 3 && it.tier == 1 },
+            "Исайя 26.3 + prose should stay an explicit tier-1 ref, got $ru"
+        )
+        val en = run("Isaiah 26:3 says, you will keep him in perfect peace.")
+        assertTrue(
+            en.any { it.bookNum == 23 && it.chapter == 26 && it.verseStart == 3 && it.tier == 1 },
+            "Isaiah 26:3 + prose should stay an explicit tier-1 ref, got $en"
+        )
+    }
+
+    @Test fun `dot between digits is citation notation`() {
+        val refs = run("Псалом 118.105")
+        assertTrue(
+            refs.any { it.bookNum == 19 && it.chapter == 118 && it.verseStart == 105 },
+            "Псалом 118.105 should resolve as chapter:verse, got $refs"
+        )
+    }
+
+    @Test fun `keyword-bound numbers still drop before prose - not verses`() {
+        // colonSeen is deliberately the ONLY filler-survival trigger: a chapter keyword followed
+        // by an unrelated count must not fabricate a verse.
+        val refs = run("Матфея 3 глава, мы видим 5 причин почему.")
+        assertTrue(
+            refs.none { it.verseStart == 5 },
+            "count after keyword-bound chapter must not become verse 5, got $refs"
+        )
     }
 }

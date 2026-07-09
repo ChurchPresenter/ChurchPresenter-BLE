@@ -210,7 +210,11 @@ object ReferenceWatcher {
         // Use a Unicode-safe lookahead, not \b — Java's \b is ASCII-only and won't fire after Cyrillic.
         s = Regex("(\\d{1,3})-(?:я|й|е|го|му|м|ой|ом|ая|ое|ый|ий|ст|нд|рд|th|nd|st|rd)(?![\\p{L}])")
             .replace(s) { it.groupValues[1] }
-        // make ":" and "-" (between alphanumerics) standalone separator tokens
+        // make ":" and "-" (between alphanumerics) standalone separator tokens. A dot BETWEEN
+        // digits ("Исайя 26.3", "Псалом 118.105") is the same citation notation as a colon —
+        // normalize it to one BEFORE the general punctuation fold below turns it into a space
+        // (which split chapter and verse into two bare numbers the prose guard then discarded).
+        s = Regex("(?<=\\d)\\.(?=\\d)").replace(s, " : ")
         s = s.replace(":", " : ")
         s = Regex("(?<=[\\p{L}0-9])-(?=[\\p{L}0-9])").replace(s, " - ")
         // drop other punctuation (commas, dots, parens, quotes …) to whitespace
@@ -380,6 +384,7 @@ object ReferenceWatcher {
         var verseStart: Int? = null
         var verseEnd: Int? = null
         var keywordSeen = false
+        var colonSeen = false
         var rangeArmed = false
         // numbers buffered since the last keyword/colon, each tagged whether a range preceded it
         val recent = ArrayList<Pair<Int, Boolean>>()
@@ -410,7 +415,7 @@ object ReferenceWatcher {
                 recent.clear()
             }
             emit(curBook, chapter, verseStart, verseEnd, keywordSeen, sticky, now, out)
-            chapter = null; verseStart = null; verseEnd = null; keywordSeen = false; rangeArmed = false
+            chapter = null; verseStart = null; verseEnd = null; keywordSeen = false; colonSeen = false; rangeArmed = false
         }
 
         for (a in atoms) {
@@ -427,12 +432,20 @@ object ReferenceWatcher {
                 }
                 is Atom.ChapKw -> { assignChapterFromRecent(); keywordSeen = true }
                 is Atom.VerseKw -> { assignVersesFromRecent(); keywordSeen = true }
-                is Atom.Colon -> { assignChapterFromRecent() }
+                is Atom.Colon -> { assignChapterFromRecent(); colonSeen = true }
                 is Atom.Range -> { rangeArmed = true }
                 is Atom.From -> { /* "с N по M": start of a verse range — no-op, recent handles it */ }
                 is Atom.ListSep -> { /* keep recent; lists don't form ranges */ }
                 is Atom.Num -> { recent.add(a.value to rangeArmed); rangeArmed = false }
-                is Atom.Filler -> { recent.clear(); rangeArmed = false }
+                is Atom.Filler -> {
+                    // A colon already bound these numbers to the reference ("Исайя 26:3 написано
+                    // «…»", "Isaiah 26:3 says …") — trailing prose must not wipe the buffered
+                    // verse. Without a colon, numbers followed by prose are likely counts
+                    // ("Марк 5 человек") — drop as before. Deliberately colon-only, NOT
+                    // keywordSeen: "Матфея 3 глава … 5 причин" must not turn 5 into a verse.
+                    if (colonSeen && recent.isNotEmpty()) assignVersesFromRecent() else recent.clear()
+                    rangeArmed = false
+                }
             }
         }
         flush()
