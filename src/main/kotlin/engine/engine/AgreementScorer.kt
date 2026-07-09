@@ -30,8 +30,11 @@ object AgreementScorer {
     }
 
     private fun tokenize(text: String): Set<String> =
-        text.lowercase()
-            .split(Regex("[^a-z\\u0400-\\u04FF]+"))
+        // \p{L}: keep ALL letters (the old a-z+Cyrillic class shredded accented Latin —
+        // "hätte" -> "h"+"tte" — for the non-EN/RU bibles). ё→е folds standard Russian
+        // orthography variance symmetrically (verse text and STT share this path).
+        text.lowercase().replace('ё', 'е')
+            .split(Regex("[^\\p{L}]+"))
             .filter { it.length >= 3 }
             .toSet()
 }

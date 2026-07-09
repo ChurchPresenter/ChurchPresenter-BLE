@@ -88,8 +88,9 @@ object ContinuationEngine {
     }
 
     private fun wordOverlap(verseText: String, query: String): Double {
-        val vWords = verseText.lowercase().split(Regex("[^a-z\\u0400-\\u04FF]+")).filter { it.length >= 3 }.toSet()
-        val qWords = query.lowercase().split(Regex("[^a-z\\u0400-\\u04FF]+")).filter { it.length >= 3 }.toSet()
+        // Same letter-class + ё-folding rationale as AgreementScorer.tokenize.
+        val vWords = verseText.lowercase().replace('ё', 'е').split(Regex("[^\\p{L}]+")).filter { it.length >= 3 }.toSet()
+        val qWords = query.lowercase().replace('ё', 'е').split(Regex("[^\\p{L}]+")).filter { it.length >= 3 }.toSet()
         if (qWords.isEmpty() || vWords.isEmpty()) return 0.0
         return vWords.intersect(qWords).size.toDouble() / qWords.size
     }

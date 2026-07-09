@@ -121,8 +121,10 @@ class BibleIndex(private val translations: List<EngineTranslation>) {
     }
 
     fun tokenize(text: String): List<String> =
-        text.lowercase()
-            .replace(Regex("[^a-z0-9\\u0400-\\u04FF]"), " ")
+        // \p{L} + ё→е: see AgreementScorer.tokenize — index and query share this function,
+        // so the normalization stays symmetric by construction.
+        text.lowercase().replace('ё', 'е')
+            .replace(Regex("[^\\p{L}0-9]"), " ")
             .split(Regex("\\s+"))
             .filter { it.length >= 2 && it !in STOPWORDS }
 

@@ -24,8 +24,30 @@ object BookResolver {
         65 to "Jude", 66 to "Revelation",
     )
 
+    // Apostrophe-like characters that can appear inside book names (typewriter, typographic,
+    // modifier letter, backtick). See the ALIASES doc note for why variants are registered.
+    private val APOSTROPHES = charArrayOf('\'', '’', 'ʼ', '`')
+
+    private fun apostropheVariants(name: String): List<String> {
+        if (name.none { it in APOSTROPHES }) return emptyList()
+        var spaced = name
+        var deleted = name
+        for (ch in APOSTROPHES) {
+            spaced = spaced.replace(ch, ' ')
+            deleted = deleted.replace(ch.toString(), "")
+        }
+        return listOf(spaced.trim().replace(Regex("\\s+"), " "), deleted).filter { it.isNotEmpty() && it != name }
+    }
+
     val ALIASES: Map<String, Int> = buildMap {
-        fun add(num: Int, vararg names: String) = names.forEach { put(it, num) }
+        // Aliases containing an apostrophe (Ukrainian "об'явлення" etc.) also register their
+        // apostrophe→space and apostrophe-deleted forms: the tokenizer splits apostrophes to
+        // whitespace (so the greedy multi-token join sees "об явлення"), and STT sometimes
+        // drops them entirely ("обявлення"). Without the variants such aliases can never match.
+        fun add(num: Int, vararg names: String) = names.forEach { name ->
+            put(name, num)
+            apostropheVariants(name).forEach { putIfAbsent(it, num) }
+        }
 
         // ── English ──────────────────────────────────────────────────────────
         add(1, "genesis", "gen", "ge", "gn")
@@ -617,11 +639,15 @@ object BookResolver {
     fun register(spbBookNames: List<Pair<Int, String>>) {
         val combined = ALIASES.toMutableMap()
         for ((num, name) in spbBookNames) {
-            combined.putIfAbsent(name.lowercase().trim(), num)
+            val key = name.lowercase().replace('ё', 'е').trim() // fold ё→е like the tokenizer
+            combined.putIfAbsent(key, num)
+            // Same apostrophe-variant expansion as the static table (Ukrainian SPB book names).
+            apostropheVariants(key).forEach { combined.putIfAbsent(it, num) }
         }
         _aliasesByLength = combined.entries.sortedByDescending { it.key.length }.map { it.key to it.value }
         _stemIndex = buildStemIndex(combined)
     }
 
     fun canonicalName(bookNum: Int): String = CANONICAL_NAMES[bookNum] ?: "Book $bookNum"
+
 }

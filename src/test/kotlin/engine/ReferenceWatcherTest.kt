@@ -723,4 +723,30 @@ class ReferenceWatcherTest {
             "count after keyword-bound chapter must not become verse 5, got $refs"
         )
     }
+
+    // ── Punctuation robustness: apostrophe aliases + ё folding (2026-07-09 audit) ──────────────
+
+    @Test fun `ukrainian apostrophe alias resolves in both spellings`() {
+        // "об'явлення" tokenizes to two tokens (apostrophe → space); the registered
+        // space/deleted variants are what make the greedy join land on Revelation.
+        val withApostrophe = run("Об'явлення 3 глава 12 вірш.")
+        assertTrue(
+            withApostrophe.any { it.bookNum == 66 && it.chapter == 3 && it.verseStart == 12 },
+            "Об'явлення 3:12 should resolve, got $withApostrophe"
+        )
+        val without = run("Обявлення 3 глава 12 вірш.")
+        assertTrue(
+            without.any { it.bookNum == 66 && it.chapter == 3 && it.verseStart == 12 },
+            "Обявлення 3:12 should resolve, got $without"
+        )
+    }
+
+    @Test fun `ё spelling of a book name resolves`() {
+        // ё→е folds before alias/stem lookup, so a ё-spelled inflection still resolves.
+        val refs = run("Матфёя 5 глава 3 стих.")
+        assertTrue(
+            refs.any { it.bookNum == 40 && it.chapter == 5 && it.verseStart == 3 },
+            "ё-spelled Матфёя should fold to Матфея and resolve, got $refs"
+        )
+    }
 }

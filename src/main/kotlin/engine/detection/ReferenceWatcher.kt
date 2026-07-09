@@ -204,6 +204,9 @@ object ReferenceWatcher {
 
     private fun tokenize(text: String): List<String> {
         var s = text.lowercase().replace('–', '-').replace('—', '-')
+            // ё→е is standard Russian orthography variance (verse/alias text may carry ё, STT
+            // writes е) — folded unconditionally, unlike the STT-quirk э→е below.
+            .replace('ё', 'е')
         // Gated STT spelling normalization: fold Cyrillic э→е so "эфесянам"→"ефесянам" resolves.
         if (Config.normalizeStt) s = s.replace('э', 'е')
         // strip digit-ordinal suffixes ("3-я" -> "3", "21-й" -> "21", "19-го" -> "19", "2nd" -> "2").
