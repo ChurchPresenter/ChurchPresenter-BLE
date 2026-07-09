@@ -21,6 +21,7 @@ class DetectionLoggerTest {
                 transcript = "и мы читаем", translation = "and we read",
                 prevBook = 46, prevChapter = 11, newBook = 9, newChapter = 15,
             )
+            DetectionLogger.drainForTests()
 
             val stickyLog = dir.listFiles()?.singleOrNull { it.name.startsWith("sticky-log-") }
             assertTrue(stickyLog != null, "expected a sticky-log-*.jsonl file, got ${dir.listFiles()?.map { it.name }}")
@@ -46,6 +47,7 @@ class DetectionLoggerTest {
             Config.logStickyChanges = false
 
             DetectionLogger.logStickyChange("a", "b", null, null, 9, 15)
+            DetectionLogger.drainForTests()
 
             assertTrue(dir.listFiles().isNullOrEmpty(), "expected no file written when disabled")
         } finally {

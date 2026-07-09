@@ -117,9 +117,13 @@ FN        — operator confirmed, engine missed          → fix; find the missi
 | `ContinuationEngineTest.kt` | Content-matching regression guard | Sequential next-verse, chapter-scan, and chapter-history resolution/ambiguity-gate cases (synthetic in-memory fixtures — no real Bible files needed) |
 | `DetectionLoggerTest.kt` | Logging-output guard | Minimal coverage of the sticky-change log's file/field shape |
 
-There is no service-level replay test. Every sermon is different — regression at the row-id level
-doesn't transfer. Patterns are what transfer. Each fix to the engine gets a unit test that proves
-the pattern works, and that test is the regression guard for all future services.
+Service-level replay exists since 2026-07: `DbReplayTest` replays an archived `.db`
+deterministically (injected clock) against a committed golden, and `replayEval` scores a replay
+against the operator's live-references/suggestion-outcomes ground truth per matchType. Goldens
+lock the CURRENT behavior so any engine change shows up as an explicit, reviewable diff — they
+complement (not replace) the pattern-level unit tests below: each fix still gets a unit test
+proving the generalized pattern, and the golden diff is regenerated + summarized in the same
+commit.
 
 **Mechanism-level tests** (2026-07-05 §3, `ReferenceWatcherTest.kt`): a fix that generalizes a
 mechanism (not just one word/transcript) should get a test that generalizes too, so the *next* word
@@ -144,16 +148,17 @@ Fix in order: FN first, FP second, PREMATURE third, latency last.
 
 | Gap | Example | Location | Priority |
 |---|---|---|---|
-| "27-й стих" parsed as chapter when no inline глава | s4r269 → John 27:28 FP | `ExplicitParser` ordinal disambiguation | FP |
+| "27-й стих" parsed as chapter when no inline глава | s4r269 → John 27:28 FP | `ReferenceWatcher` ordinal disambiguation (ExplicitParser retired 2026-07) | FP |
 | PREMATURE verse detections | "John 3:1" before "John 3:16" | `Stabilizer` hold or CP debounce | PREMATURE — **partially resolved, see below** |
 | 3-char real-word aliases on EN track | "job"→Job, "am"→Amos | `BookResolver` per-language scoping | FP |
 | Cadence-adaptive sticky TTL | many book changes/min → shrink TTL | `ReferenceWatcher` / `Config` | continuation |
 | Bare ambiguous numbered books | "Коринфянам"/"Книга царств" without ordinal → which one? | `ReferenceWatcher.resolveNumberedBookAt` | FN (low freq, accepted — deliberately unresolved, see below) |
 | Chapter-scope/history tuning unvalidated | `Config.chapterScopeMinAgreement`/`chapterScopeMinRatio` are starting guesses (0.10 / 1.5) | `Config` | needs real data before trusting default gates |
 | Sequential verse-by-verse reading latency | Luke 2:41-52, Proverbs 3:3-6 read consecutively (one verse per operator click, 4-15s apart) — engine confirms most verses correctly via reverse/continuation, but 5-10s after the operator already advanced (misses triage's +5s window), and ~3 interior verses get no detection at all | `ContinuationEngine` / `Stabilizer` (root cause undiagnosed — may be inherent STT segment-finalization latency, not an engine defect) | FN — **deferred, needs STT segment-timing data before touching any threshold** |
-| Stem-prefix over-match on short RU aliases | resolveStem's 4-letter minimum lets short aliases like "откр" (Revelation) match unrelated longer words sharing the root ("открывает"/"открылся" — ordinary verb forms, "he reveals"/"was revealed") | `BookResolver.resolveStem` / `ReferenceWatcher.classify` | FP — **newly observed in the 2026-07-05 session (see Resolved below), not yet fixed: needs gating by matched stem, not exact token, unlike the AMBIGUOUS_BOOK_FORMS fix** |
-| "song"/"job"/"при" short-alias false positives | EN translation of Russian singing vocabulary ("петь"/"пение") repeatedly resolves to "song"→Song of Solomon (22); "при" (a common preposition) is itself a registered Proverbs (20) alias | `BookResolver.ALIASES` | FP — **surfaced by `stickyAudit` (see Resolved below), not yet investigated in depth** |
-| "повторить" stem-overextension | "повторить" ("to repeat", ordinary verb) shares a stem with a Deuteronomy ("Второзаконие") alias | `BookResolver.resolveStem` | FP — **surfaced by `stickyAudit`, same mechanism as "откр" above, not yet investigated** |
+| Stem-prefix over-match on short RU aliases | resolveStem's 4-letter minimum lets short aliases like "откр" (Revelation) match unrelated longer words sharing the root ("открывает"/"открылся" — ordinary verb forms, "he reveals"/"was revealed") | `BookResolver.resolveStem` / `ReferenceWatcher.classify` | **RESOLVED 2026-07-09** — over-extension gate in classify: a token ≥3 chars longer than its matched stem needs corroboration (digit/marker nearby); verified on the 2026-07-08 replay (removed the Revelation sticky pollution, zero TP loss) |
+| "song"/"job"/"при" short-alias false positives | EN translation of Russian singing vocabulary ("петь"/"пение") repeatedly resolves to "song"→Song of Solomon (22); "при" (a common preposition) is itself a registered Proverbs (20) alias | `BookResolver.ALIASES` | **RESOLVED 2026-07-09** — single-token exact aliases ≤4 chars need the same corroboration ambiguous forms do; multi-token and ≥5-char aliases unaffected |
+| "повторить" stem-overextension | "повторить" ("to repeat", ordinary verb) shares a stem with a Deuteronomy ("Второзаконие") alias | `BookResolver.resolveStem` | **RESOLVED 2026-07-09** — covered by the over-extension gate above |
+| EN keyword-after-number citation order | "Job chapter 3 verse 2" parses with chapter/verse swapped; bare/colon citations followed by prose ("Job 3:2 tells us…") don't emit | `ReferenceWatcher.interpret` keyword handling (tuned for the RU number-before-keyword order) | FP/FN — found 2026-07-09 while testing the alias gates; RU order unaffected |
 
 **Resolved**: spelled-Russian-ordinal + numbered-book resolution ("Первая книга царств" → 1 Samuel,
 "Третья царств" → 1 Kings, "Первое Коринфянам" → 1 Corinthians) was previously a total miss — only

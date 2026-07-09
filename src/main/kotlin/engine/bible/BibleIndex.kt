@@ -19,8 +19,10 @@ class BibleIndex(private val translations: List<EngineTranslation>) {
         val termCount: Int,
     )
 
-    private val documents = ArrayList<Document>(800_000)
-    private val invertedIndex = HashMap<String, MutableList<DocEntry>>(500_000)
+    // Sized from the actual load (typically 1-2 bibles ≈ 31k verses each) instead of a fixed
+    // 800k/500k pre-allocation that assumed every bible on disk would be indexed.
+    private val documents = ArrayList<Document>(translations.sumOf { it.byBCV.size })
+    private val invertedIndex = HashMap<String, MutableList<DocEntry>>(translations.sumOf { it.byBCV.size } / 2 + 16)
     private var avgDocLen = 0.0
 
     init {

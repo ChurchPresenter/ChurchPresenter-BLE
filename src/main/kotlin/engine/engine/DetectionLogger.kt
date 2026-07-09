@@ -41,8 +41,32 @@ object DetectionLogger {
     private const val CANDIDATE_PREFIX = "candidate-log-"
     private const val STICKY_PREFIX = "sticky-log-"
 
-    private val lock = Any()
     private val cleanedUp = AtomicBoolean(false)
+
+    // Single background writer: log calls build their line on the caller thread and enqueue;
+    // this daemon drains FIFO, so the synchronous disk append is off the detection path while
+    // per-file ordering (header first, then rows) is preserved. [pending] lets tests and
+    // shutdown wait for the queue to hit disk.
+    private val writeQueue = java.util.concurrent.LinkedBlockingQueue<Pair<File, String>>()
+    private val pending = java.util.concurrent.atomic.AtomicInteger(0)
+    private val writerThread = Thread({
+        while (true) {
+            val (file, text) = writeQueue.take()
+            runCatching { file.appendText(text, Charsets.UTF_8) }
+            pending.decrementAndGet()
+        }
+    }, "ble-log-writer").apply { isDaemon = true; start() }
+
+    private fun enqueue(target: File, line: String) {
+        pending.incrementAndGet()
+        writeQueue.put(target to line + "\n")
+    }
+
+    /** Blocks until every queued line has been written — for tests and orderly shutdown. */
+    fun drainForTests() {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (pending.get() > 0 && System.currentTimeMillis() < deadline) Thread.sleep(5)
+    }
     // Files (by absolute path) that have already had their one session header written. A set rather
     // than a single flag, so each session-keyed file gets exactly one header — appending to an
     // existing file (CP restart) just continues it, and a new session id starts a fresh header.
@@ -89,9 +113,7 @@ object DetectionLogger {
         val target = datedFile(configured, BASE_PREFIX)
         cleanupOldLogsOnce(target.parentFile)
         ensureSessionHeader(target)
-        runCatching {
-            synchronized(lock) { target.appendText(lineFor(transcript, translation, event, reason = null) + "\n", Charsets.UTF_8) }
-        }
+        enqueue(target, lineFor(transcript, translation, event, reason = null))
     }
 
     /**
@@ -125,7 +147,7 @@ object DetectionLogger {
                 append("\"sttServer\":\"").append(esc(Config.sttServerUrl)).append('"')
                 append('}')
             }
-            synchronized(lock) { target.appendText(line + "\n", Charsets.UTF_8) }
+            enqueue(target, line)
         }
     }
 
@@ -138,9 +160,7 @@ object DetectionLogger {
         val configured = path ?: return
         val target = datedFile(configured, CANDIDATE_PREFIX)
         cleanupOldLogsOnce(target.parentFile)
-        runCatching {
-            synchronized(lock) { target.appendText(lineFor(transcript, translation, event, reason) + "\n", Charsets.UTF_8) }
-        }
+        enqueue(target, lineFor(transcript, translation, event, reason))
     }
 
     /**
@@ -171,7 +191,7 @@ object DetectionLogger {
                 append("\"translation\":\"").append(esc(translation)).append('"')
                 append('}')
             }
-            synchronized(lock) { target.appendText(line + "\n", Charsets.UTF_8) }
+            enqueue(target, line)
         }
     }
 

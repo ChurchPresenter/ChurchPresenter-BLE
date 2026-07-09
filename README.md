@@ -211,7 +211,7 @@ Every event also carries the corroboration/correlation metadata described under 
 
 Each file opens with a `{"type":"session", …}` header (the bibles, level, thresholds and `sessionId` that produced its rows). Near-miss candidates go to a parallel `candidate-log-*.jsonl` for threshold tuning (gated by `Config.logCandidates`); files older than 30 days are pruned once per process.
 
-Because all three artifacts of one service — the STT `.db`, the engine `detection-log` and the client's go-live log — share the same `sessionId`, they join 1:1. `tools/match_training_data.py` resolves that join (and falls back to content/epoch matching for pre-`sessionId` data). See `REFERENCE_DETECTION_PLAN.md` §9.
+Because all three artifacts of one service — the STT `.db`, the engine `detection-log` and the client's go-live log — share the same `sessionId`, they join 1:1. `tools/match_training_data.py` resolves that join (and falls back to content/epoch matching for pre-`sessionId` data). See TRAINING_PLAN.md (artifact correlation).
 
 ## Language support
 
@@ -290,7 +290,6 @@ src/main/kotlin/engine/
 
 Alongside the source:
 
-- **`REFERENCE_DETECTION_PLAN.md`** — the detector's design reference: stateful watcher, robustness across speaking/transcription styles, validation strategy, numbering gotchas, and the `.db` ↔ jsonl artifact matching (§9).
 - **`tools/match_training_data.py`** — joins a service's `.db`, `detection-log` and `live-references` (by `sessionId`, with a content/epoch fallback) for offline precision/recall analysis.
 
 ## Tests
@@ -299,13 +298,21 @@ Alongside the source:
 ./gradlew test                      # unit suite (ReferenceWatcherTest, etc.) — always runs
 ```
 
-`DbReplayTest` replays an archived service `.db` to lock real-world regressions. The `.db` files are **never committed** (full congregation transcripts); the test skips unless you point it at a local backup:
+`DbReplayTest` replays an archived service `.db` through the real pipeline with an injected
+clock (deterministic: every TTL gate is a pure function of the recorded `ts_ms`) and compares
+against a committed golden JSONL — references and scores only, never transcript text, so goldens
+are privacy-safe to commit while the `.db` files themselves are **never committed** (full
+congregation transcripts). The test skips gracefully unless pointed at a local backup:
 
 ```bash
-./gradlew test -Dreplay.db="/path/to/service.db" -Dreplay.fixture=service1
+./gradlew test -Dreplay.db="/path/to/service.db" \
+    -Dreplay.bibles="King James Version.spb,RUS_RST.spb"   # optional; defaults to loadDefaults()
+# after an INTENTIONAL behavior change, regenerate the golden and commit it with the change:
+./gradlew test -Dreplay.db="..." -Dreplay.updateGolden=true
+# score a replay against the operator's ground-truth logs (per-matchType TP/FP/FN table):
+./gradlew replayEval --args="--db /path/service.db --lref /path/live-references-<id>.jsonl \
+    --outcomes /path/suggestion-outcomes-<id>.jsonl"
 ```
-
-See `REFERENCE_DETECTION_PLAN.md` §5 ("how to fold in the next backup") for curating new fixtures.
 
 ## SPB format
 

@@ -2,7 +2,7 @@ package engine
 
 import engine.bible.SpbLoader
 import engine.detection.BookResolver
-import engine.detection.ExplicitParser
+import engine.detection.ReferenceWatcher
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -118,10 +118,20 @@ class SpbLoaderTest {
         assertTrue(names.size >= 66, "Expected at least 66 book name entries across SPB files")
     }
 
+    /** Parses [line] through the live watcher (the ExplicitParser these tests once used is gone). */
+    private fun parseRef(line: String): ReferenceWatcher.Ref? {
+        val sticky = object : ReferenceWatcher.Sticky {
+            override var watchBook: Int? = null
+            override var watchChapter: Int? = null
+            override var watchExpiresAt: Long = 0L
+        }
+        return ReferenceWatcher.process(line, sticky, now = 1_000L).firstOrNull()
+    }
+
     @Test fun `RST SPB form К Римлянам resolves to Romans`() {
         requireBibles()
         // RST uses "К Римлянам" (not "Римлянам" which is in static aliases)
-        val r = ExplicitParser.parse("К Римлянам 8:28")
+        val r = parseRef("К Римлянам 8:28")
         assertNotNull(r, "Expected К Римлянам to resolve (registered from RST SPB)")
         assertEquals(45, r.bookNum)
         assertEquals(8, r.chapter)
@@ -131,7 +141,7 @@ class SpbLoaderTest {
     @Test fun `RST SPB form Книга Судей resolves to Judges`() {
         requireBibles()
         // RST uses "Книга Судей" (not "Судей" which is in static aliases)
-        val r = ExplicitParser.parse("Книга Судей 4:4")
+        val r = parseRef("Книга Судей 4:4")
         assertNotNull(r, "Expected Книга Судей to resolve (registered from RST SPB)")
         assertEquals(7, r.bookNum)
         assertEquals(4, r.chapter)
@@ -141,7 +151,7 @@ class SpbLoaderTest {
     @Test fun `RST SPB form 1-е Коринфянам resolves to 1 Corinthians`() {
         requireBibles()
         // RST uses "1-е Коринфянам" ordinal form (static has "1 Коринфянам")
-        val r = ExplicitParser.parse("1-е Коринфянам 13:4")
+        val r = parseRef("1-е Коринфянам 13:4")
         assertNotNull(r, "Expected 1-е Коринфянам to resolve (registered from RST SPB)")
         assertEquals(46, r.bookNum)
         assertEquals(13, r.chapter)

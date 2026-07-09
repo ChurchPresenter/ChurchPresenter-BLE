@@ -3,7 +3,7 @@ package engine.detection
 import engine.Config
 
 /**
- * Stateful explicit-reference detector. Replaces the single-string [ExplicitParser] for the live
+ * Stateful explicit-reference detector. Replaced the older single-string ExplicitParser for the live
  * feed: it scans an utterance into typed atoms (book / chapter-keyword / verse-keyword / number /
  * range / colon) and interprets them into references, while carrying a **sticky** book+chapter
  * across utterances so a later bare "N стих" (verse-by-verse reading) still resolves.
