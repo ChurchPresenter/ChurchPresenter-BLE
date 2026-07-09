@@ -4,13 +4,21 @@ import engine.Config
 import engine.engine.DetectionEngine
 import io.socket.client.IO
 import io.socket.client.Socket
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 class SttSocketClient(
     private val serverUrl: String,
     private val detectionEngine: DetectionEngine,
     private val broadcaster: Broadcaster,
+    /** Single-threaded detection scope (EngineServer) — all engine mutation is confined to it,
+     *  and the Socket.IO event thread only parses payloads and enqueues work. Launches from the
+     *  one event thread onto the one-thread dispatcher keep FIFO order. */
+    private val detectionScope: CoroutineScope,
+    /** STT link state transitions (connected/disconnected/error) — feeds the engine_status
+     *  broadcast so consuming apps can show the engine's REAL upstream health. */
+    private val onSttStatus: (connected: Boolean) -> Unit = {},
 ) {
     private lateinit var socket: Socket
 
@@ -23,12 +31,17 @@ class SttSocketClient(
 
         socket.on(Socket.EVENT_CONNECT) {
             if (Config.verboseLog) println("Connected to STT server: $serverUrl")
+            onSttStatus(true)
         }
         socket.on(Socket.EVENT_DISCONNECT) {
             if (Config.verboseLog) println("Disconnected from STT server")
+            onSttStatus(false)
         }
+        // Reconnection itself is socket.io-client's default behavior (infinite attempts with
+        // backoff); this handler only surfaces the state.
         socket.on(Socket.EVENT_CONNECT_ERROR) { args ->
             System.err.println("STT server connection error: ${args.firstOrNull()}")
+            onSttStatus(false)
         }
 
         // Both streams feed ONE utterance ("live") so the detector sees the transcript AND its
@@ -38,20 +51,22 @@ class SttSocketClient(
         socket.on("transcription_update") { args ->
             val payload = args.firstOrNull() as? JSONObject ?: return@on
             transcriptionUpdate(payload)?.let { u ->
-                val events = detectionEngine.processTranscription(
-                    "live", u.text, u.speechType, u.segmentId, u.startTime, u.sessionId
-                )
-                runBlocking { for (e in events) broadcaster.broadcast(e) }
+                detectionScope.launch {
+                    detectionEngine.processTranscription(
+                        "live", u.text, u.speechType, u.segmentId, u.startTime, u.sessionId
+                    ).forEach { broadcaster.broadcast(it) }
+                }
             }
         }
 
         socket.on("translation_update") { args ->
             val payload = args.firstOrNull() as? JSONObject ?: return@on
             translationUpdate(payload)?.let { u ->
-                val events = detectionEngine.processTranslation(
-                    "live", u.text, u.speechType, u.segmentId, u.startTime, u.sessionId
-                )
-                runBlocking { for (e in events) broadcaster.broadcast(e) }
+                detectionScope.launch {
+                    detectionEngine.processTranslation(
+                        "live", u.text, u.speechType, u.segmentId, u.startTime, u.sessionId
+                    ).forEach { broadcaster.broadcast(it) }
+                }
             }
         }
 

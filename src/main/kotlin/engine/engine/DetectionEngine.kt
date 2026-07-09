@@ -52,6 +52,8 @@ data class ScriptureEvent(
     val stickyChapter: Int? = null,    // sticky context chapter when this fired
 )
 
+private const val MAX_UTTERANCES = 128
+
 class DetectionEngine(
     private val translations: List<EngineTranslation>,
     // Injectable time source so the replay harness (DbReplayTest) can drive every time-dependent
@@ -67,7 +69,15 @@ class DetectionEngine(
         else translations.filter { it.id in Config.defaultTranslations }.ifEmpty { translations }
     private val index = BibleIndex(indexTranslations)
     private val stabilizer = Stabilizer(clock)
-    private val utterances = HashMap<String, UtteranceState>()
+    // Access-ordered LRU bound: the STT path only ever uses the single id "live", but the
+    // direct-WS input path takes caller-supplied ids with no natural end — a long-lived
+    // standalone server must not grow without bound. All access is confined to the single
+    // detection thread (see EngineServer), so a plain LinkedHashMap is safe.
+    private val utterances = object : LinkedHashMap<String, UtteranceState>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, UtteranceState>): Boolean =
+            size > MAX_UTTERANCES
+    }
+
 
     fun processTranscription(
         id: String,

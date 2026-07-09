@@ -12,7 +12,12 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
 import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * Handle to a running engine instance; call [stop] to shut it (and its STT client) down.
@@ -52,6 +57,18 @@ object EngineServer {
         DetectionLogger.path = File(bibleRoot, "detection-log.jsonl").absolutePath
         val broadcaster = Broadcaster()
 
+        // ALL detection-state mutation (DetectionEngine.utterances, Stabilizer maps, Config
+        // tuning) is confined to this one thread — the invariant that makes the engine safe
+        // with multiple WS clients + the Socket.IO STT thread without any locking.
+        val detectionExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "ble-detection").apply { isDaemon = true }
+        }
+        val detectionDispatcher = detectionExecutor.asCoroutineDispatcher()
+        val detectionScope = CoroutineScope(SupervisorJob() + detectionDispatcher)
+
+        fun statusJson(sttConnected: Boolean): String =
+            """{"type":"engine_status","sttConnected":$sttConnected,"sttConfigured":${sttUrl.isNotBlank()}}"""
+
         // Bind the WS server BEFORE connecting the STT client (so we never leak a detecting-but-
         // unreachable STT client). The requested port may be taken — most commonly because it
         // collides with ChurchPresenter's Companion server — so try a small range and use the first
@@ -65,7 +82,7 @@ object EngineServer {
                         maxFrameSize = Long.MAX_VALUE
                         masking = false
                     }
-                    routing { bibleEngineSocket(detectionEngine, broadcaster) }
+                    routing { bibleEngineSocket(detectionEngine, broadcaster, detectionDispatcher) }
                 }.start(wait = false)
             }.getOrNull()?.let { it to p }
         }
@@ -76,20 +93,34 @@ object EngineServer {
         val (server, boundPort) = bound
         if (boundPort != port) System.err.println("bible-engine: port $port busy — bound on $boundPort instead")
         Config.outputPort = boundPort
+        // Initial status (also replayed to every late-joining client by the Broadcaster):
+        // not connected to STT yet; sttConfigured=false tells consumers a blank STT url is a
+        // deliberate WS-input-only setup, not an error.
+        broadcaster.broadcastStatus(statusJson(sttConnected = false))
 
         val sttClient: SttSocketClient? =
             try {
-                if (sttUrl.isNotBlank()) SttSocketClient(sttUrl, detectionEngine, broadcaster).also { it.connect() }
-                else null
+                if (sttUrl.isNotBlank()) {
+                    SttSocketClient(
+                        sttUrl, detectionEngine, broadcaster, detectionScope,
+                        onSttStatus = { connected -> broadcaster.broadcastStatus(statusJson(connected)) }
+                    ).also { it.connect() }
+                } else null
             } catch (e: Exception) {
                 System.err.println("bible-engine: failed to connect STT client — ${e.message}")
                 runCatching { server.stop(500, 1000) }
+                runCatching { broadcaster.close() }
+                runCatching { detectionScope.cancel() }
+                runCatching { detectionExecutor.shutdown() }
                 return null
             }
 
         return EngineHandle(boundPort) {
             runCatching { sttClient?.disconnect() }
             runCatching { server.stop(500, 1000) }
+            runCatching { broadcaster.close() }
+            runCatching { detectionScope.cancel() }
+            runCatching { detectionExecutor.shutdown() }
         }
     }
 }
