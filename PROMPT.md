@@ -1,66 +1,93 @@
-# Prompt: BLE training pass (paste this to start a fresh session)
+# Prompt: BLE session validation / training pass (paste this to start a fresh session)
 
-We have a training guide, read that: `TRAINING_PLAN.md` (in this directory, `ChurchPresenter-BLE/`).
-Here are the new session files:
+New session files are in `<session folder>` (a `.db` plus `bible-stt-logs/` with
+`detection-log-*.jsonl`, `sticky-log-*.jsonl`, and possibly `live-references-*.jsonl`) —
+I'll give you the path when I paste this. Read `TRAINING_PLAN.md` (in this directory,
+`ChurchPresenter-BLE/`) before touching anything.
 
+Bibles for replay: two `.spb` files (one per citation language, e.g. an English and a Russian
+translation) in the app's bible folder — `AppConfig.discoverBibleRoot()` finds it, or I'll give
+you the path.
 
-Follow the workflow in `TRAINING_PLAN.md` exactly: run `tools/triage_report.py` on the detection-log +
-live-references first, then work each FN/FP/PREMATURE in priority order. Use the `.db` file only when a
-pattern is ambiguous from the report text alone. If a `sticky-log-*.jsonl` is present, also run
-`./gradlew stickyAudit --args="<path>"` (Workflow step 2b) — it automatically classifies every sticky
-book/chapter jump against the live engine's own alias/stem data, so you no longer need to manually
-cross-reference timestamps by hand (that used to take hours; the Revelation/Proverbs pattern from the
-first session, and two more bugs from the second, were all found this way before the tool existed).
+## Hard rules (before anything else)
 
-A few things I want you to actually do differently from a plain "read the guide and go" pass, based on
-what worked well and what didn't last time:
+- **Never commit or push any artifact derived from recorded sessions** — goldens, detection/sticky
+  logs, `.db` files, triage output. `src/test/resources/replay/` is gitignored and stays local;
+  session data is private even when it's refs-only.
+- **Don't commit anything at all unless I explicitly say "commit".** Implement and verify; leave
+  the commit decision to me.
+
+## Phase A — validate the session (always do this first)
+
+1. Inspect the `.db` read-only: row/partial/final/segment counts, session duration,
+   `translation_ts_ms` lag stats (min/avg/max) — report the lag trend vs. previous sessions.
+   Contract to confirm: partials are cumulative snapshots with incrementing `partial_seq`;
+   `translation_ts_ms` shares the `ts_ms` clock.
+2. Generate a local golden (determinism guard runs inside the test):
+   ```
+   ./gradlew test --tests "engine.replay.DbReplayTest" \
+     -Dreplay.db=<path to the .db> -Dreplay.updateGolden=true \
+     '-Dreplay.bibles=<first bible>.spb,<second bible>.spb' \
+     --rerun-tasks
+   ```
+   Then re-run WITHOUT `-Dreplay.updateGolden` to confirm comparison mode passes, and confirm
+   `git status` stays clean (golden must be ignored).
+3. Diff the replay golden against the live detection-log's emitted refs (ref + matchType counts).
+   Near-1:1 is expected (small jitter is normal — live sees every streaming partial, the DB stores
+   throttled snapshots). Investigate any wildly divergent ref against the DB row text. Note total
+   emissions as the spam check.
+4. Ground truth check: a `live-references` file counts only if its `sessionId` matches this session
+   (`sessionId: null` = unrelated app testing). If it matches, run the `replayEval` gradle task for
+   per-matchType precision/recall. If not, say so and skip scoring.
+5. Report: contract health, replay-vs-live verdict, translation lag, anything for the STT dev.
+
+## Phase B — training pass (only when there is matching ground truth, or I point at specific misses)
+
+Follow the workflow in `TRAINING_PLAN.md`: run `tools/triage_report.py` on the detection-log +
+live-references, then work each FN/FP/PREMATURE in priority order. Use the `.db` only when a pattern
+is ambiguous from the report text. If a `sticky-log-*.jsonl` is present, also run
+`./gradlew stickyAudit --args="<path>"` — it auto-classifies every sticky book/chapter jump against
+the live engine's own alias/stem data (found the Revelation/Proverbs pattern and two more bugs
+before manual cross-referencing would have).
+
+Discipline rules from past passes — follow these, they each earned their place:
 
 1. **Chase the real root cause, not the nearest patch.** When a test phrase and the actual trigger
    phrase differ (e.g. an abbreviated/digit form vs. the natural spoken form), don't write the test
-   against whichever one happens to pass easily — dig until you're testing the phrasing that will
-   actually recur. If you catch yourself writing a very precise, unlikely-to-repeat test string, stop
-   and ask whether the *pattern* behind it is what needs fixing instead.
+   against whichever one happens to pass easily — test the phrasing that will actually recur. A very
+   precise, unlikely-to-repeat test string is a sign the *pattern* behind it needs fixing instead.
 
-2. **Prefer generalizing an existing mechanism over hardcoding one more case.** The ordinal/numbered-book
-   fix and the chapter-scoped verse resolution both came from asking "what's the general shape of this
-   problem, and do we already have the data/tool to solve the general case?" before writing anything
-   book/verse-specific. Check `BookResolver.kt`, `ReferenceWatcher.kt`, `ContinuationEngine.kt`,
-   `AgreementScorer.kt`, and `EngineTranslation`'s `byChapter`/`byBCV` lookups for reusable primitives
+2. **Prefer generalizing an existing mechanism over hardcoding one more case.** Check
+   `BookResolver.kt`, `ReferenceWatcher.kt`, `ContinuationEngine.kt`, `AgreementScorer.kt`,
+   `BibleIndex.kt`, and `EngineTranslation`'s `byChapter`/`byBCV` lookups for reusable primitives
    before inventing new ones.
 
-3. **Never fabricate a value the STT never said.** If a code path defaults a missing verse/chapter/book
-   to a guess (`?: 1` or similar), treat that as a bug, not a convenience — the engine should stay silent
-   and prime whatever context it can (sticky, chapter history) rather than show a wrong reference. This
-   bit us twice in the same session (book+chapter-together, then chapter-only-via-sticky) via two
-   different code paths — check *all* the places a similar default could hide, not just the first one
-   you find.
+3. **Never fabricate a value the STT never said.** A code path defaulting a missing
+   verse/chapter/book to a guess (`?: 1` or similar) is a bug, not a convenience — stay silent and
+   prime context (sticky, chapter history) instead. This bit us twice in one session via two
+   different code paths — check *all* the places a similar default could hide.
 
-4. **Don't guess tuning constants.** If a threshold/ratio genuinely needs real data to set correctly
-   (e.g. `Config.chapterScopeMinAgreement`/`chapterScopeMinRatio`), say so explicitly, pick a reasonable
-   documented starting value, and leave it for the next real session's data — don't iterate on gut-feel
-   numbers with no logs to check them against.
+4. **Don't guess tuning constants.** If a threshold genuinely needs real data, pick a documented
+   starting value, mark it provisional in `Config`, and leave it for the next session's data.
 
-5. **For anything beyond a one-line/obvious fix, use Plan Mode.** Read the relevant source fully, trace
-   the actual data flow by hand (don't assume), and write the plan file with concrete file/function
-   references before touching code. Ask clarifying questions when a design choice is genuinely the
-   user's to make (e.g. scope of a new feature, whether to defer something pending more data) — don't
-   assume.
+5. **For anything beyond a one-line/obvious fix, use Plan Mode.** Read the relevant source fully,
+   trace the data flow by hand, write the plan with concrete file/function references. Ask when a
+   design choice is genuinely mine to make.
 
-6. **Every fix needs a test using the real trigger text**, added to `ReferenceWatcherTest.kt` or
-   `ContinuationEngineTest.kt` (synthetic in-memory fixtures are fine and preferred for `ContinuationEngine`
-   — no real Bible files needed). Run `bash gradlew test` (full suite, not just the new tests) before
-   calling anything done.
+6. **Every fix needs a test using the real trigger text**, in `ReferenceWatcherTest.kt` or
+   `ContinuationEngineTest.kt` (synthetic in-memory fixtures preferred for `ContinuationEngine`).
+   Run `bash gradlew test` (full suite) before calling anything done.
 
-7. **When a fix generalizes a mechanism (not just one word/phrase), also add a mechanism-level test** —
-   an invariant checked across several inputs, or a seeded fuzz test iterating an extensible table
-   (e.g. `AMBIGUOUS_BOOK_FORMS`) rather than hardcoding today's specific words. See the "Mechanism-level
-   tests" note under Test Strategy in `TRAINING_PLAN.md`. The goal: the next word/phrase that falls into
-   the same trap should be caught automatically, not require another full triage session to find by hand.
+7. **When a fix generalizes a mechanism, also add a mechanism-level test** — an invariant across
+   several inputs or a seeded fuzz over an extensible table (e.g. `AMBIGUOUS_BOOK_FORMS`), so the
+   next phrase falling into the same trap is caught automatically. See Test Strategy in
+   `TRAINING_PLAN.md`.
 
-8. **Update `TRAINING_PLAN.md`** — the Known Engine Gaps table, the Resolved/Built notes below it, and
-   the Test Strategy / File Locations sections if a new test file, tool, or artifact type gets added.
-   Keep it scannable, not a chronological diary.
+8. **Any engine behavior change must regenerate the affected local goldens** with
+   `-Dreplay.updateGolden=true` and summarize the diff (events added/removed and why) in your
+   report — the golden diff is the review artifact, even though goldens are no longer committed.
 
-9. **Don't commit unless asked.** Implement and verify with tests; leave the commit decision to me.
+9. **Update `TRAINING_PLAN.md`** — Known Engine Gaps table, Resolved/Built notes, Test Strategy /
+   File Locations — keep it scannable, not a chronological diary.
 
-Start by reading `TRAINING_PLAN.md`, then run the triage report.
+Start with Phase A. Only enter Phase B if there's ground truth or I ask for fixes.
