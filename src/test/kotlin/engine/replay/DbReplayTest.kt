@@ -152,4 +152,57 @@ class DbReplayTest {
             assertTrue(result.events.all { it.sessionId == "smoke" })
         }
     }
+
+    @Test fun `translation_ts_ms column is honored when present`() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { conn ->
+            conn.createStatement().use { st ->
+                st.executeUpdate(
+                    "CREATE TABLE transcriptions (id INTEGER PRIMARY KEY, ts_ms INTEGER, text TEXT, " +
+                        "translated_text TEXT, speech_type TEXT, segment_id TEXT, session_id TEXT, " +
+                        "start_time REAL, is_final INTEGER DEFAULT 1, denied INTEGER DEFAULT 0, " +
+                        "translation_ts_ms INTEGER)"
+                )
+                st.executeUpdate(
+                    "INSERT INTO transcriptions (ts_ms, text, translated_text, translation_ts_ms, segment_id) " +
+                        "VALUES (1000, 'привет мир', 'hello world', 3500, 'seg-1')"
+                )
+            }
+            val rows = ArrayList<DbReplay.Row>()
+            conn.createStatement().use { st ->
+                // Mirror readRows' optional-column handling through the same code path is not
+                // possible on an in-memory connection (readRows opens its own) — assert the
+                // parsing contract directly instead.
+                val rs = st.executeQuery("SELECT translation_ts_ms FROM transcriptions")
+                rs.next()
+                kotlin.test.assertEquals(3500L, rs.getLong(1))
+            }
+            // File-backed path exercises readRows itself.
+            val tmp = java.io.File.createTempFile("replay-ts", ".db")
+            try {
+                DriverManager.getConnection("jdbc:sqlite:${tmp.absolutePath}").use { fileConn ->
+                    fileConn.createStatement().use { st ->
+                        st.executeUpdate(
+                            "CREATE TABLE transcriptions (id INTEGER PRIMARY KEY, ts_ms INTEGER, text TEXT, " +
+                                "translated_text TEXT, speech_type TEXT, segment_id TEXT, session_id TEXT, " +
+                                "start_time REAL, is_final INTEGER DEFAULT 1, denied INTEGER DEFAULT 0, " +
+                                "translation_ts_ms INTEGER)"
+                        )
+                        st.executeUpdate(
+                            "INSERT INTO transcriptions (ts_ms, text, translated_text, translation_ts_ms, segment_id) " +
+                                "VALUES (1000, 'привет мир', 'hello world', 3500, 'seg-1')"
+                        )
+                        st.executeUpdate(
+                            "INSERT INTO transcriptions (ts_ms, text, segment_id) VALUES (2000, 'вторая строка', 'seg-2')"
+                        )
+                    }
+                }
+                val fileRows = DbReplay.readRows(tmp.absolutePath)
+                assertEquals(2, fileRows.size)
+                assertEquals(3500L, fileRows[0].translationTsMs, "translation arrival time must be read when the column exists")
+                assertEquals(null, fileRows[1].translationTsMs)
+            } finally {
+                tmp.delete()
+            }
+        }
+    }
 }

@@ -42,6 +42,10 @@ object DbReplay {
         val startTime: Double?,
         val isFinal: Boolean,
         val denied: Boolean,
+        /** Arrival time of the row's translation when the db records it separately
+         *  (`translation_ts_ms`, nullable, newer STT servers) — live, the translation is a
+         *  later event than the transcript, and replay honors that when the data exists. */
+        val translationTsMs: Long? = null,
     )
 
     data class ReplayResult(
@@ -61,10 +65,19 @@ object DbReplay {
     fun readRows(dbPath: String, includeDenied: Boolean = false): List<Row> {
         val rows = ArrayList<Row>(1024)
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
+            // Optional column on newer STT servers — select it only when the schema has it, so
+            // older dbs keep loading (and replaying byte-identically).
+            val hasTranslationTs = conn.createStatement().use { st ->
+                val info = st.executeQuery("PRAGMA table_info(transcriptions)")
+                var found = false
+                while (info.next()) if (info.getString("name") == "translation_ts_ms") found = true
+                found
+            }
             conn.createStatement().use { st ->
+                val translationTsCol = if (hasTranslationTs) ", translation_ts_ms" else ""
                 val rs = st.executeQuery(
                     "SELECT id, ts_ms, text, translated_text, speech_type, segment_id, session_id, " +
-                        "start_time, is_final, denied FROM transcriptions ORDER BY ts_ms, id"
+                        "start_time, is_final, denied$translationTsCol FROM transcriptions ORDER BY ts_ms, id"
                 )
                 var lastTs = 0L
                 while (rs.next()) {
@@ -88,6 +101,9 @@ object DbReplay {
                             startTime = rs.getDouble("start_time").takeIf { !rs.wasNull() },
                             isFinal = rs.getInt("is_final") != 0,
                             denied = denied,
+                            translationTsMs = if (hasTranslationTs) {
+                                rs.getLong("translation_ts_ms").takeIf { !rs.wasNull() && it > 0L }
+                            } else null,
                         )
                     )
                 }
@@ -115,39 +131,51 @@ object DbReplay {
                 while (window.size > 2) window.removeFirst()
             }
 
+            // Feed events in true arrival order: the transcript at the row's ts_ms, the
+            // translation at its own translation_ts_ms when the db records one (live, it IS a
+            // later event). Without the column both land at the row ts with transcript first —
+            // exactly the old per-row order, so pre-column dbs replay byte-identically.
+            data class FeedEvent(val row: Row, val isTranslation: Boolean, val tsMs: Long)
+            val feed = ArrayList<FeedEvent>(rows.size * 2)
             for (row in rows) {
-                clockNow = row.tsMs
-                val emitted = ArrayList<ScriptureEvent>()
-                if (row.text != null) {
+                if (row.text != null) feed.add(FeedEvent(row, false, row.tsMs))
+                if (row.translated != null) {
+                    feed.add(FeedEvent(row, true, row.translationTsMs ?: row.tsMs))
+                }
+            }
+            feed.sortWith(compareBy({ it.tsMs }, { it.row.id }, { it.isTranslation }))
+
+            for (ev in feed) {
+                clockNow = ev.tsMs
+                val row = ev.row
+                val emitted: List<ScriptureEvent>
+                if (!ev.isTranslation) {
+                    val text = row.text ?: continue
                     val windowed = if (row.isFinal) {
-                        push(txWindow, row.text)
+                        push(txWindow, text)
                         windowedText(txWindow.toList(), null)
                     } else {
-                        windowedText(txWindow.toList(), row.text)
-                    }
-                    if (windowed != null) {
-                        emitted += engine.processTranscription(
-                            "live", windowed, row.speechType, row.segmentId, row.startTime, row.sessionId
-                        )
-                    }
-                }
-                if (row.translated != null) {
+                        windowedText(txWindow.toList(), text)
+                    } ?: continue
+                    emitted = engine.processTranscription(
+                        "live", windowed, row.speechType, row.segmentId, row.startTime, row.sessionId
+                    )
+                } else {
+                    val text = row.translated ?: continue
                     val windowed = if (row.isFinal) {
-                        push(trWindow, row.translated)
+                        push(trWindow, text)
                         windowedText(trWindow.toList(), null)
                     } else {
-                        windowedText(trWindow.toList(), row.translated)
-                    }
-                    if (windowed != null) {
-                        emitted += engine.processTranslation(
-                            "live", windowed, row.speechType, row.segmentId, row.startTime, row.sessionId
-                        )
-                    }
+                        windowedText(trWindow.toList(), text)
+                    } ?: continue
+                    emitted = engine.processTranslation(
+                        "live", windowed, row.speechType, row.segmentId, row.startTime, row.sessionId
+                    )
                 }
                 for (e in emitted) {
-                    lines.add(lineFor(row, e))
+                    lines.add(lineFor(row, e, ev.tsMs))
                     events.add(e)
-                    eventTs.add(row.tsMs)
+                    eventTs.add(ev.tsMs)
                 }
             }
             return ReplayResult(lines, events, eventTs)
@@ -157,13 +185,13 @@ object DbReplay {
     }
 
     /** One privacy-safe JSONL line per emitted event: refs + scores only, no transcript text. */
-    private fun lineFor(row: Row, e: ScriptureEvent): String {
+    private fun lineFor(row: Row, e: ScriptureEvent, tsMs: Long = row.tsMs): String {
         val ref = "${e.reference.bookId}:${e.reference.chapter}:${e.reference.verseStart}" +
             (e.reference.verseEnd?.let { "-$it" } ?: "")
         val conf = (e.confidence * 1000).roundToInt() / 1000.0
         return buildString {
             append("{\"row\":").append(row.id)
-            append(",\"tsMs\":").append(row.tsMs)
+            append(",\"tsMs\":").append(tsMs)
             append(",\"segmentId\":").append(jsonStr(e.segmentId))
             append(",\"type\":").append(jsonStr(e.type))
             append(",\"matchType\":").append(jsonStr(e.matchType))
