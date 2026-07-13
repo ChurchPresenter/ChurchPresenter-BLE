@@ -458,6 +458,72 @@ class ReferenceWatcherTest {
         }
     }
 
+    // ── Inflected ambiguous words (2026-07-12 session, AMBIGUOUS_BOOK_STEMS) ────
+
+    @Test fun `genitive бытия as ordinary vocabulary does not clear sticky chapter mid-passage (real session trace)`() {
+        // Real trace (sticky-log-2026-07-12_173830.jsonl line 19, ts 2026-07-12T22:58:39.822Z):
+        // reading through an English exposition of Psalm 14 with live Russian translation, "уровне
+        // своего бытия" (translation of "...level of his being") falsely resolved as Genesis (book
+        // 1), sandwiched between two genuine "Psalm 14"/"Псалма 14" mentions in the same combined
+        // transcript+translation call — nulling the sticky chapter mid-sermon.
+        val sticky = TestSticky()
+        sticky.watchBook = 19
+        sticky.watchChapter = 14
+        ReferenceWatcher.process(
+            "He may say, hallelujah, God is alive, yet in his heart, you know, at the deepest, " +
+                "most intimate level of his being, he may confess a different kind of faith, in " +
+                "inverted commas. his heart and with his life, he will repeat the words of the " +
+                "fool from Psalm 14. 14, it is unlikely that the words, there's no God, spoken by " +
+                "a man of God,",
+            "Он может сказать, аллелюя, Бог жив, но в своем сердце, вы знаете, на самом глубоком, " +
+                "самом интимном уровне своего бытия, он может исповедовать другой вид веры, в " +
+                "обернутых кометах. своим сердцем и своей жизнью, он повторит слова дурака из " +
+                "Псалма 14. 14, it is unlikely that the words, there's no God, spoken by a man of God,",
+            sticky, now = 1_000L,
+        )
+        assertEquals(19, sticky.watchBook)
+        assertEquals(14, sticky.watchChapter,
+            "genitive «бытия» must not falsely resolve to Genesis and clear the sticky chapter")
+    }
+
+    @Test fun `digit-adjacent genitive бытия still resolves as Genesis`() {
+        val r = run("Бытия, 1 глава, 1 стих.").single()
+        assertEquals(Triple(1, 1, 1), r.triple())
+    }
+
+    // ── Bare chapter number before a verse keyword (2026-07-12 session) ────────
+
+    @Test fun `Psalm 10 verse 13 resolves chapter 10 verse 13, not transposed (real session trace)`() {
+        // Real trace: DB row ts_ms=1783897645684 (session 2026-07-12_173830), the corrected/final
+        // STT text. No chapter keyword for "10" — it must still bind as chapter by the universal
+        // bare "book N" convention, not get swept into verseStart by the trailing "verse" keyword.
+        val r = run("The illusion is reflected in Psalm 10, verse 13.").single()
+        assertEquals(Triple(19, 10, 13), r.triple())
+    }
+
+    @Test fun `Psalm 10 verse 30 (STT mis-hearing variant) still resolves chapter 10`() {
+        // Real trace: DB row ts_ms=1783897642945, a transient partial where STT misheard "13" as
+        // "30" one second before self-correcting. The engine previously parsed this as chapter=30,
+        // verse=10 (transposed) — an "explicit" match, which auto-goes-live with no staging net.
+        val r = run("The illusion is reflected in Psalm 10, verse 30.").single()
+        assertEquals(Triple(19, 10, 30), r.triple())
+    }
+
+    @Test fun `bare chapter number before a verse keyword resolves as chapter, not verse (general invariant)`() {
+        // Not just Psalm 10 (the real trace) — the same "book, bare number, verse keyword with no
+        // chapter keyword" shape must hold across books and both languages.
+        val cases = listOf(
+            Triple(19, "Псалом 10 стих 13.", Triple(19, 10, 13)),
+            Triple(40, "Matthew 5 verse 3.", Triple(40, 5, 3)),
+            Triple(45, "Римлянам 8 стих 28.", Triple(45, 8, 28)),
+            Triple(43, "John 3 verse 16.", Triple(43, 3, 16)),
+        )
+        for ((_, text, expected) in cases) {
+            val r = run(text).single()
+            assertEquals(expected, r.triple(), "expected $expected for \"$text\", got ${r.triple()}")
+        }
+    }
+
     // Real non-reference sentences confirmed benign in past sessions. Append newly-confirmed-benign
     // trigger text here as future sessions surface it (in addition to, not instead of, a dedicated
     // named test for any actual fix) — this list is meant to keep growing every session instead of
@@ -475,6 +541,9 @@ class ReferenceWatcherTest {
         "we will sing a song together this morning.",
         "he did a good job on the presentation.",
         "при этом мы видим важную деталь.",
+        // 2026-07-12 session: genitive "бытия" as ordinary vocabulary ("...level of his being"),
+        // closed by AMBIGUOUS_BOOK_STEMS.
+        "на самом глубоком, самом интимном уровне своего бытия, он может исповедовать другой вид веры.",
     )
 
     @Test fun `growing negative corpus never emits or hijacks an unset sticky book`() {

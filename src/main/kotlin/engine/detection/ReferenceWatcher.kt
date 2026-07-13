@@ -126,6 +126,20 @@ object ReferenceWatcher {
         "бытие" to 1, "быт" to 1,
     )
 
+    // Some ambiguous words are ambiguous in EVERY inflected form — "бытие"/"бытия"/"бытием"/"бытии"
+    // all mean "being/existence" as ordinary vocabulary exactly as often as they cite Genesis, no
+    // matter the case ending — unlike "иоанну"/"иоанне" above, where only the dative/locative case
+    // is ambiguous (genitive "иоанна"/nominative "иоанн" are already unconditional exact aliases
+    // handled earlier in classify()'s greedy branch, and both happen to share the stem "иоанн" —
+    // folding them in here would wrongly demand corroboration for those already-correct forms).
+    // Gate the inflection-tolerant resolveStem() path (classify) by stem instead of exact token so
+    // every case ending is covered without hardcoding each one — real trace: sticky-log
+    // 2026-07-12T22:58:39Z, genitive "бытия" (a machine-translation tail of "...level of his
+    // being") slipped through the exact-token gate and cleared a sticky chapter mid-sermon.
+    internal val AMBIGUOUS_BOOK_STEMS: Map<String, Int> = mapOf(
+        BookResolver.stemOf("бытие") to 1,
+    )
+
     private sealed interface Atom {
         data class Book(val num: Int) : Atom
         object ChapKw : Atom
@@ -289,7 +303,8 @@ object ReferenceWatcher {
                     // that, require the same corroboration ambiguous aliases need. The threshold
                     // matches StickyAudit's empirically-validated risky band (extension >= 3).
                     val overExtended = tok.length - match.stem.length >= STEM_MAX_EXTENSION_UNCORROBORATED
-                    val needsCorroboration = overExtended || AMBIGUOUS_BOOK_FORMS[tok] != null
+                    val needsCorroboration = overExtended || AMBIGUOUS_BOOK_FORMS[tok] != null ||
+                        AMBIGUOUS_BOOK_STEMS[match.stem] != null
                     val gated = needsCorroboration && !hasAmbiguousBookCorroboration(tokens, i)
                     if (!gated) { atoms.add(Atom.Book(match.bookNum)); i++; matched = true }
                 }
@@ -445,7 +460,19 @@ object ReferenceWatcher {
                     keywordSeen = true
                 }
                 is Atom.VerseKw -> {
-                    if (recent.isNotEmpty()) assignVersesFromRecent() else pendingVerseKw = true
+                    when {
+                        // "Book N, verse M" with no chapter keyword for N ("Psalm 10, verse 13") —
+                        // same bare "book number = chapter" convention flush()'s own leftover
+                        // fallback already applies. Without this, N gets swept into verseStart below
+                        // and flush()'s leftover fallback wrongly promotes the real verse number M
+                        // into chapter (parsed as ch=?, v=10 instead of ch=10, v=13).
+                        chapter == null && curBook != null && recent.isNotEmpty() -> {
+                            assignChapterFromRecent()
+                            pendingVerseKw = true
+                        }
+                        recent.isNotEmpty() -> assignVersesFromRecent()
+                        else -> pendingVerseKw = true
+                    }
                     keywordSeen = true
                 }
                 is Atom.Colon -> { assignChapterFromRecent(); colonSeen = true }

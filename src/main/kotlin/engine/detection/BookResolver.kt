@@ -605,7 +605,9 @@ object BookResolver {
     private const val MIN_STEM = 4
     private val RU_TRIM = "йьяиаеоуюёы".toSet()
 
-    private fun stemOf(s: String): String {
+    // internal (not private): ReferenceWatcher.AMBIGUOUS_BOOK_STEMS derives its keys from this so
+    // they can never desync from the trimming rule actually used to build the stem index.
+    internal fun stemOf(s: String): String {
         var x = s
         while (x.length > MIN_STEM && x.last() in RU_TRIM) x = x.dropLast(1)
         return x

@@ -151,6 +151,7 @@ Fix in order: FN first, FP second, PREMATURE third, latency last.
 | Gap | Example | Location | Priority |
 |---|---|---|---|
 | "27-й стих" parsed as chapter when no inline глава | s4r269 → John 27:28 FP | `ReferenceWatcher` ordinal disambiguation (ExplicitParser retired 2026-07) | FP |
+| Short-alias corroboration too loose for ordinary counting/naming phrases | "Two songs" (translation of "Два пения")→Song of Solomon (22); "осия" ("stubbornness"-adjacent RU word) → Hosea (28), then stuck as the wrong sticky book for ~40 min, causing a cluster of FNs once the service moved to Psalm 14 | `ReferenceWatcher.hasAmbiguousBookCorroboration` — a bare "N X" count phrase satisfies the digit-within-2-tokens check identically to a real "chapter N" citation | FP / FN (recurred with the same "songs" shape in both 2026-07-12 sessions; the "осия" case shows a single bad corroboration can corrupt the sticky book for the rest of the passage, not just one emission — not root-caused deeply enough this session to fix safely, see 2026-07-12 Resolved entry below for what *was* fixed) |
 | PREMATURE verse detections | "John 3:1" before "John 3:16" | `Stabilizer` hold or CP debounce | PREMATURE — **partially resolved, see below** |
 | 3-char real-word aliases on EN track | "job"→Job, "am"→Amos | `BookResolver` per-language scoping | FP |
 | Cadence-adaptive sticky TTL | many book changes/min → shrink TTL | `ReferenceWatcher` / `Config` | continuation |
@@ -250,6 +251,50 @@ both traceable to actual utterances this time. Two distinct, unrelated root caus
   Revelation). Needs a different gating point (by matched stem, not exact token) — left for a future
   session rather than bolted on speculatively here.
 
+**Resolved** (2026-07-12 session, two new sessions' `stickyAudit`/`replayEval`/`triage_report.py`
+surfaced two previously-undiagnosed bugs, both in `ReferenceWatcher.kt`, both root-caused against
+real `.db`/log text rather than guessed):
+- **Inflected ambiguous words bypassed the 2026-07-05 corroboration gate.** `AMBIGUOUS_BOOK_FORMS`
+  is keyed on exact surface tokens ("бытие"/"быт"), so genitive "бытия" (real trace: a machine-
+  translation tail of "...level of his **being**") reached the inflection-tolerant `resolveStem`
+  path unconditionally (its stem extension is only 1 char, under the over-extension threshold) and
+  falsely resolved to Genesis — sandwiched between two genuine "Psalm 14" mentions in one bilingual
+  utterance, nulling the sticky chapter mid-sermon (`stickyAudit`'s own `CHAPTER-CLEARED SAME-BOOK`
+  category, "should be ~zero"). Fixed with a new stem-keyed `AMBIGUOUS_BOOK_STEMS` map, gating
+  `resolveStem` matches by `BookResolver.stemOf(token)` in addition to the exact-token check —
+  covers every case ending of "бытие" without hardcoding each one. **Deliberately scoped to just
+  "бытие"**, not folded into a blanket stem-based gate for all of `AMBIGUOUS_BOOK_FORMS`: "иоанну"/
+  "иоанне"'s ambiguity is case-specific (only dative/locative), and share a stem with the already-
+  unconditional genitive/nominative "иоанна"/"иоанн" — stemming those too would wrongly demand
+  corroboration for forms that are already correct today.
+- **A verse keyword with no preceding chapter keyword swept the unclaimed chapter number into the
+  verse slot.** Real trace: "Psalm 10, verse 13" (no chapter keyword for "10" — chapter by the bare
+  "book N" convention) parsed with chapter/verse transposed (`ref: "Psalm 30:10"` — with the STT's
+  own transient "13"→"30" mis-hearing folded in) because `interpret()`'s `Atom.VerseKw` branch swept
+  *any* non-empty `recent` buffer into `verseStart` with no check for whether a chapter had actually
+  been bound. Shipped to the operator as `matchType: explicit` — one of the two match types that
+  auto-go-live (no staging safety net). A third, previously-unaddressed shape, distinct from the two
+  2026-07-09 keyword-order fixes below. Fixed by reusing `assignChapterFromRecent()` (already used
+  by `Atom.ChapKw`/`Atom.Colon`) when a verse keyword arrives with no chapter bound yet and a book
+  named this call — the same "bare book number = chapter" convention `flush()`'s own leftover
+  fallback already applies.
+
+Both fixes are unit-tested against the real session trigger text (dual-track transcript+translation
+for the first; the exact DB row text, both the STT's transient mis-hearing and the corrected final
+text, for the second) plus a mechanism-level generalization test, in `ReferenceWatcherTest.kt`.
+Golden diff on the two sessions that motivated this: `golden-2026-07-12_092012.jsonl` is
+byte-identical (neither bug's shape occurs in that session — clean no-op); `golden-2026-07-12_173830.jsonl`
+gained exactly one new correct event (`19:10:13`, previously silently dropped) and nothing else
+changed. Note: the specific `CHAPTER-CLEARED` sticky-log event that motivated the first fix does
+**not** disappear from a `stickyAudit` re-run of the *same recorded* `sticky-log-*.jsonl` file — that
+file is a frozen artifact of the live (pre-fix) run and can't retroactively change; the fix is
+verified directly (the exact real trigger text, unit-tested) rather than via re-triaging old logs.
+The `.db`-replay's own segment reconstruction didn't reproduce the identical utterance boundary
+either, so 173830's overall recall only moved from 13/25 to 14/25 in this pass — most of that
+session's remaining Psalm-14-window FNs trace to the separate, unfixed "осия"/Hosea sticky-book
+hijack noted in the gap table above (a stuck wrong sticky book from ~40 minutes earlier in the
+service), not the two bugs fixed here.
+
 `sticky-log-*.jsonl` (see Artifact Types above) traces every sticky change regardless of whether
 anything emits. Independent file, gated by `Config.logStickyChanges` (default on) —
 `triage_report.py` doesn't read it and is unaffected.
@@ -288,6 +333,26 @@ The app's own training logs (`live-references-*.jsonl` / `suggestion-outcomes-*.
 a future session can directly measure acceptance/dismissal rate per tier (e.g. "were staged
 chapter-history suggestions mostly accepted via double-click, or mostly ignored?") instead of relying
 on the engine's own detection-log alone.
+
+**Validation-coverage gap: the engine is Russian-speech-validated, not English-speech-validated**
+(noted 2026-07-12). Every gate/threshold above (`AMBIGUOUS_BOOK_FORMS`, `STEM_MAX_EXTENSION_UNCORROBORATED`,
+`SHORT_ALIAS_MAX_LEN`, the corroboration digit-window, all of it) was tuned and tested exclusively
+against Russian sermon speech plus its English *machine translation* — every real trigger transcript
+quoted anywhere in this file or `AGENT.md` is Russian-source. `2026-07-12`'s evening service
+(`2026-07-12_173830.db`) was the first session with substantial native English-source preaching
+(`source_language='en'` on 235 of 930 final rows — the morning service that same day was 100%
+Russian-source). Checked `source_language` at each bug/false-positive found that session: the
+"verse keyword with no chapter keyword" shape (fixed 2026-07-12, see Resolved above) and two of
+three short-alias false hits ("james"/"psalm" hijacking the sticky book) all trace to English-source
+rows specifically — natural English citation grammar ("Psalm 10, verse 13", no "chapter" word) and
+English narrative prose colliding with English book-abbreviation aliases are plausible reasons these
+particular shapes never surfaced in two years of Russian-source data. The third short-alias hit that
+same session ("осия"→Hosea) is a Russian-source row — same known bug class as "song"/"job", not new.
+**Practical effect**: don't assume today's fixes "cover" English speech generally — this is a single
+session's worth of data on an entire previously-untested dimension. The next English-heavy session
+should get extra scrutiny rather than being waved through, and any future short-alias false positive
+should be checked against `source_language` before assuming it's the same, already-well-tuned bug
+class as the Russian-track gaps above.
 
 ---
 
