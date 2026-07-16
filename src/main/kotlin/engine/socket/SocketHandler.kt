@@ -52,7 +52,11 @@ fun Route.bibleEngineSocket(
                     "ping" -> send(Frame.Text("""{"type":"pong"}"""))
                     "set_tuning" -> {
                         val level = obj["level"]?.jsonPrimitive?.contentOrNull
-                        if (level != null) withContext(detectionContext) { Config.applyLevel(level) }
+                        val continuationSpeed = obj["continuationSpeed"]?.jsonPrimitive?.contentOrNull
+                        withContext(detectionContext) {
+                            if (level != null) Config.applyLevel(level)
+                            if (continuationSpeed != null) Config.applyContinuationSpeed(continuationSpeed)
+                        }
                     }
                     "transcription_update" -> {
                         if (id.isBlank()) continue

@@ -161,4 +161,50 @@ class ContinuationEngineTest {
         val state = stateWithLastDetected(t, 9, 15, 22, "some prose alpha beta only", now)
         assertNull(ContinuationEngine.check(state, listOf(t), now + 5_000))
     }
+
+    // ── "Verse speed" user knob (2026-07-15): Config.applyContinuationSpeed ──────────────────
+
+    @Test fun `applyContinuationSpeed changes only continuationMinCoverage`() {
+        try {
+            Config.applyContinuationSpeed("balanced")
+            assertEquals(0.5, Config.continuationMinCoverage)
+            assertEquals("balanced", Config.continuationSpeed)
+
+            Config.applyContinuationSpeed("fast")
+            assertEquals(0.45, Config.continuationMinCoverage)
+            assertEquals("fast", Config.continuationSpeed)
+
+            // Unrecognized name is a silent no-op, matching applyLevel's existing behavior.
+            Config.applyContinuationSpeed("warpspeed")
+            assertEquals(0.45, Config.continuationMinCoverage, "unrecognized preset must not change the floor")
+        } finally {
+            Config.applyContinuationSpeed("balanced")
+        }
+    }
+
+    @Test fun `a verse that fails the balanced floor passes at the fast preset`() {
+        // 20 distinct >=3-char verse words (>=4, so the floor isn't forced to 1.0), 9 of them
+        // present in the window: coverage = 9/20 = 0.45 exactly — below balanced's 0.5, at
+        // fast's 0.45 floor (>= is inclusive).
+        val verseWords = "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr sss ttt"
+        val t = fixture(listOf(
+            EngineVerse("9-15-22", 9, 15, 22, "previous verse words here now", false),
+            EngineVerse("9-15-23", 9, 15, 23, verseWords, false),
+        ))
+        val now = 1_000_000L
+        val window = "aaa bbb ccc ddd eee fff ggg hhh iii filler1 filler2 filler3"
+        val state = stateWithLastDetected(t, 9, 15, 22, window, now)
+        try {
+            Config.applyContinuationSpeed("balanced")
+            assertNull(ContinuationEngine.check(state, listOf(t), now + 5_000),
+                "0.45 coverage must fail the balanced (0.5) floor")
+
+            Config.applyContinuationSpeed("fast")
+            val result = ContinuationEngine.check(state, listOf(t), now + 5_000)
+            assertNotNull(result, "0.45 coverage must pass the fast (0.45) floor")
+            assertEquals(23, result.verse.verse)
+        } finally {
+            Config.applyContinuationSpeed("balanced")
+        }
+    }
 }

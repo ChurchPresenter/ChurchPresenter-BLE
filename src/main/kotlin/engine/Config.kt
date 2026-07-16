@@ -39,6 +39,18 @@ object Config {
     // a ~50% ceiling even when a verse is read verbatim (the documented sequential-reading FN
     // class; Matthew 9:37 in the 2026-07-08 session). Verses with < 4 distinct scoring words must
     // be fully covered instead (spurious-full-coverage guard).
+    //
+    // User-facing knob (2026-07-15): this is the ONLY tuning constant behind the "Verse speed"
+    // chip (BibleTab.kt) — see applyContinuationSpeed below. "Balanced" keeps this at the
+    // original 0.5; "Fast" drops it to 0.45, chosen from a real sweep (0.5/0.45/0.4/0.35/0.3)
+    // across 4 archived sessions (85 ground-truth references total): 0.45 was the only value
+    // that improved recall (62->63/85) with ZERO added detection volume in 3 of 4 sessions and
+    // no regressions anywhere. 0.4 was a net wash (gained 1 match, lost a different 1 elsewhere —
+    // check() returns the FIRST next-candidate crossing the floor, not the best one, so a looser
+    // floor can occasionally lock onto the wrong verse). 0.35/0.3 matched or slightly beat 0.45's
+    // recall but with meaningfully more continuation emission churn (chip re-fire volume) for
+    // little/no extra correct verses. Provisional like every other floor in this file — revisit
+    // once more sessions accumulate real data (TRAINING_PLAN.md has the full sweep table).
     var continuationMinCoverage = 0.5
     val dedupWindow = 32
     // Suppress an identical reference only within this window (time-based, replaces the old fixed
@@ -125,6 +137,25 @@ object Config {
             "conservative" -> { reverseEnabled = true; minConfidenceEmit = 0.6; reverseMinScoreRatio = 2.5; stickyTtlMs = 240_000L; normalizeStt = false; inferBookAtEnd = false }
             "balanced"     -> { reverseEnabled = true; minConfidenceEmit = 0.4; reverseMinScoreRatio = 2.0; stickyTtlMs = 180_000L; normalizeStt = true;  inferBookAtEnd = false }
             "aggressive"   -> { reverseEnabled = true; minConfidenceEmit = 0.3; reverseMinScoreRatio = 1.5; stickyTtlMs = 90_000L;  normalizeStt = true;  inferBookAtEnd = true }
+        }
+    }
+
+    // The active "Verse speed" preset name, recorded on each logged detection the same way
+    // `level` is — self-describing rows, independent of the aggressiveness level above (a
+    // session can change either one mid-service without affecting the other).
+    var continuationSpeed: String = "balanced"
+
+    /**
+     * Maps the client's "Verse speed" preset to [continuationMinCoverage] — the ONLY constant
+     * this touches. Deliberately separate from [applyLevel]: the aggressiveness level never
+     * changed this floor (checked directly against the code before this knob was added), and an
+     * unrecognized name is a silent no-op, matching [applyLevel]'s existing behavior.
+     */
+    fun applyContinuationSpeed(speed: String) {
+        this.continuationSpeed = speed.lowercase()
+        when (speed.lowercase()) {
+            "balanced" -> continuationMinCoverage = 0.5
+            "fast"     -> continuationMinCoverage = 0.45
         }
     }
 }

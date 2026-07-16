@@ -136,6 +136,8 @@ object DetectionLogger {
                 else append("\"sessionId\":null,")
                 append("\"bibles\":[").append(Config.loadedBibles.joinToString(",") { "\"" + esc(it) + "\"" }).append("],")
                 append("\"level\":\"").append(esc(Config.level)).append("\",")
+                append("\"continuationSpeed\":\"").append(esc(Config.continuationSpeed)).append("\",")
+                append("\"continuationMinCoverage\":").append(Config.continuationMinCoverage).append(',')
                 append("\"minConfidenceEmit\":").append(Config.minConfidenceEmit).append(',')
                 append("\"reverseMinScoreRatio\":").append(Config.reverseMinScoreRatio).append(',')
                 append("\"reverseMinAgreement\":").append(Config.reverseMinAgreement).append(',')
@@ -210,6 +212,8 @@ object DetectionLogger {
             append("\"confidence\":").append(event.confidence).append(',')
             // Active aggressiveness level when this row was produced (off/conservative/balanced/aggressive).
             append("\"level\":\"").append(esc(Config.level)).append("\",")
+            // Active "Verse speed" preset when this row was produced (balanced/fast) — independent of level.
+            append("\"continuationSpeed\":\"").append(esc(Config.continuationSpeed)).append("\",")
             append("\"emitted\":").append(reason == null).append(',')
             if (reason != null) append("\"reason\":\"").append(esc(reason)).append("\",")
             // ── Diagnostics for tuning: which Bible matched, a stable group key, the decision

@@ -157,7 +157,7 @@ Fix in order: FN first, FP second, PREMATURE third, latency last.
 | Cadence-adaptive sticky TTL | many book changes/min → shrink TTL | `ReferenceWatcher` / `Config` | continuation |
 | Bare ambiguous numbered books | "Коринфянам"/"Книга царств" without ordinal → which one? | `ReferenceWatcher.resolveNumberedBookAt` | FN (low freq, accepted — deliberately unresolved, see below) |
 | Chapter-scope/history tuning unvalidated | `Config.chapterScopeMinAgreement`/`chapterScopeMinRatio` are starting guesses (0.10 / 1.5) | `Config` | **RESOLVED (provisionally) 2026-07-09** — the 2026-07-08 replay showed 94 chapter-history emissions / 0 TPs; now gated structurally (candidate pool = sticky + 5 most-recent chapters, verse-coverage floors 0.45 scan / 0.6 history, agreement 0.20) → 4 emissions, recall unchanged. Values provisional until more services are recorded |
-| Sequential verse-by-verse reading latency | Luke 2:41-52, Proverbs 3:3-6 read consecutively (one verse per operator click, 4-15s apart) — engine confirms most verses correctly via reverse/continuation, but 5-10s after the operator already advanced (misses triage's +5s window), and ~3 interior verses get no detection at all | `ContinuationEngine` / `Stabilizer` (root cause undiagnosed — may be inherent STT segment-finalization latency, not an engine defect) | **RESOLVED (coverage half) 2026-07-09** — sequential check now scores verse-side coverage instead of window-diluted overlap; Matthew 9:37/11:30 recovered on the replay. Residual STT segment-finalization latency remains outside the engine |
+| Sequential verse-by-verse reading latency | Luke 2:41-52, Proverbs 3:3-6 read consecutively (one verse per operator click, 4-15s apart) — engine confirms most verses correctly via reverse/continuation, but 5-10s after the operator already advanced (misses triage's +5s window), and ~3 interior verses get no detection at all | `ContinuationEngine` / `Stabilizer` (root cause undiagnosed — may be inherent STT segment-finalization latency, not an engine defect) | **RESOLVED (coverage half) 2026-07-09** — sequential check now scores verse-side coverage instead of window-diluted overlap; Matthew 9:37/11:30 recovered on the replay. Residual STT segment-finalization latency remains outside the engine. **User-facing knob added 2026-07-15** — see "Verse speed" entry below |
 | Stem-prefix over-match on short RU aliases | resolveStem's 4-letter minimum lets short aliases like "откр" (Revelation) match unrelated longer words sharing the root ("открывает"/"открылся" — ordinary verb forms, "he reveals"/"was revealed") | `BookResolver.resolveStem` / `ReferenceWatcher.classify` | **RESOLVED 2026-07-09** — over-extension gate in classify: a token ≥3 chars longer than its matched stem needs corroboration (digit/marker nearby); verified on the 2026-07-08 replay (removed the Revelation sticky pollution, zero TP loss) |
 | "song"/"job"/"при" short-alias false positives | EN translation of Russian singing vocabulary ("петь"/"пение") repeatedly resolves to "song"→Song of Solomon (22); "при" (a common preposition) is itself a registered Proverbs (20) alias | `BookResolver.ALIASES` | **RESOLVED 2026-07-09** — single-token exact aliases ≤4 chars need the same corroboration ambiguous forms do; multi-token and ≥5-char aliases unaffected |
 | "повторить" stem-overextension | "повторить" ("to repeat", ordinary verb) shares a stem with a Deuteronomy ("Второзаконие") alias | `BookResolver.resolveStem` | **RESOLVED 2026-07-09** — covered by the over-extension gate above |
@@ -353,6 +353,39 @@ session's worth of data on an entire previously-untested dimension. The next Eng
 should get extra scrutiny rather than being waved through, and any future short-alias false positive
 should be checked against `source_language` before assuming it's the same, already-well-tuned bug
 class as the Russian-track gaps above.
+
+**Built: "Verse speed" — a user-facing knob for the sequential-reading latency gap (2026-07-15).**
+ChurchPresenter's Bible tab already had a "Text match" level chip (off/conservative/balanced/
+aggressive), but that only ever touches `minConfidenceEmit`/`reverseMinScoreRatio`/`stickyTtlMs`/
+`inferBookAtEnd` (`Config.applyLevel`) — it never touched `continuationMinCoverage`, the actual
+floor gating the sequential-reading latency gap above. Added a second, independent knob:
+`Config.applyContinuationSpeed("balanced"|"fast")`, reachable via a new `continuationSpeed` field
+on the existing `set_tuning` WebSocket message (`SocketHandler.kt`), surfaced as its own "Verse
+speed" chip in the app's Bible tab (deliberately scoped to ONLY this one constant, not bundled
+with `chapterScopeMinCoverage`/`chapterHistoryMinCoverage` — those already default lower/faster
+and no session has flagged them as slow).
+
+Preset values picked from a real sweep (not guessed): `continuationMinCoverage` ∈
+{0.5, 0.45, 0.4, 0.35, 0.3} run via `replayEval` against 4 archived sessions (2026-07-08_183702,
+2026-07-12_092012, 2026-07-12_173830, 2026-07-15_184110 — 85 ground-truth references total):
+
+| coverage | recall (matched/85) | note |
+|---|---|---|
+| 0.5 (old default) | 62/85 | baseline |
+| **0.45 ("Fast")** | **63/85** | clean win — identical emission counts to baseline in 3/4 sessions, one FN flips to TP in the 4th, zero regressions |
+| 0.4 | 62/85 | net wash — gains 1 match in one session, *loses* a different 1 elsewhere (`ContinuationEngine.check()` returns the FIRST next-candidate crossing the floor, not the best one, so a looser floor can occasionally lock onto the wrong verse) |
+| 0.35 | 63/85 | same recall as 0.45 but continuation's raw emission volume jumps 48→61 in the busiest session (more chip churn, no extra correct verses) |
+| 0.3 | 64/85 | +1 more than 0.45, but emission volume jumps further to 70 (+46% over baseline) |
+
+Chose **Balanced = 0.5, Fast = 0.45** — the only candidate that's a clean win with no downside
+measured. Values marked provisional in `Config.kt` like every other floor in this file; revisit
+once more sessions accumulate data, and reconsider 0.4/0.35/0.3 only with a larger sample (the
+non-monotonic dip at 0.4 specifically should not be treated as "0.4 is bad" — it's one session's
+coin-flip on a small sample). `DetectionLogger` now stamps every row/session-header with
+`continuationSpeed` and `continuationMinCoverage`, same as `level`, so future triage can tell
+which preset was active. Files: `Config.kt`, `SocketHandler.kt`, `DetectionLogger.kt`,
+`ContinuationEngineTest.kt` (engine-side); `BibleEngineSettings.kt`, `BibleEngineClient.kt`,
+`BibleViewModel.kt`, `BibleTab.kt`, `MainDesktop.kt`, `strings.xml` (app-side, main repo).
 
 ---
 
