@@ -635,6 +635,16 @@ object BookResolver {
         _stemIndex.firstOrNull { token.length >= it.first.length && token.startsWith(it.first) }
             ?.let { StemMatch(it.second, it.first) }
 
+    // Stems that exist ONLY because an SPB module registered its own book name — i.e. never vetted
+    // against real transcripts the way the static table above was. A module is free to name a book
+    // with a word that is also ordinary vocabulary (the Russian Synodal names book 65 "Иуда", the
+    // man Judas, and book 28 "Осия"), and such a name arrives here with no length or ambiguity
+    // review at all. ReferenceWatcher.classify demands corroboration before letting a SHORT one of
+    // these resolve; a static short alias is already gated in its own branch.
+    private var _registeredOnlyStems: Set<String> = emptySet()
+
+    internal fun isRegisteredOnlyStem(stem: String): Boolean = stem in _registeredOnlyStems
+
     // Called once at startup with (bookNum, bookName) pairs from all loaded SPB files.
     // Adds any name not already in the static alias table so every SPB language
     // gets explicit-reference support for free.
@@ -648,6 +658,8 @@ object BookResolver {
         }
         _aliasesByLength = combined.entries.sortedByDescending { it.key.length }.map { it.key to it.value }
         _stemIndex = buildStemIndex(combined)
+        val staticStems = buildStemIndex(ALIASES).map { it.first }.toSet()
+        _registeredOnlyStems = _stemIndex.map { it.first }.filterNot { it in staticStems }.toSet()
     }
 
     fun canonicalName(bookNum: Int): String = CANONICAL_NAMES[bookNum] ?: "Book $bookNum"

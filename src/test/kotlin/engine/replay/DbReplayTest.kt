@@ -17,7 +17,11 @@ import kotlin.test.assertTrue
  *   ./gradlew test -Dreplay.db=/path/to/service.db
  * regenerate the golden after an intentional behavior change:
  *   ./gradlew test -Dreplay.db=... -Dreplay.updateGolden=true
- * optional: -Dreplay.bibles="King James Version.spb,RUS_RST_(RUSSIAN SYNODAL TRANSLATION).spb"
+ * optional: -Dreplay.bibles="<primary>.spb,<secondary>.spb"
+ *   Name the modules the SERVICE ran with (bibleSettings in ~/.churchpresenter/settings.json), not
+ *   whichever files happen to be in the folder: two modules of one translation can number Psalms
+ *   differently (a Synodal-numbered RST and a Hebrew-numbered one both call themselves "RST"), and
+ *   replaying against the wrong one shifts every Psalm by a chapter.
  *           -Dreplay.level=balanced
  *
  * The golden JSONL contains references and scores only — never transcript text — so it is

@@ -5,9 +5,11 @@ New session files are in `<session folder>` (a `.db` plus `bible-stt-logs/` with
 I'll give you the path when I paste this. Read `TRAINING_PLAN.md` (in this directory,
 `ChurchPresenter-BLE/`) before touching anything.
 
-Bibles for replay: two `.spb` files (one per citation language, e.g. an English and a Russian
-translation) in the app's bible folder — `AppConfig.discoverBibleRoot()` finds it, or I'll give
-you the path.
+Bibles for replay: the **primary and secondary the service actually ran with** — read them from
+`bibleSettings` in `~/.churchpresenter/settings.json`, don't pick by filename. Two modules of one
+translation can number Psalms differently (this machine has a Synodal-numbered and a Hebrew-numbered
+"RST"), and the wrong one shifts every Psalm by a chapter. `AppConfig.discoverBibleRoot()` finds the
+folder.
 
 ## Hard rules (before anything else)
 
@@ -27,7 +29,7 @@ you the path.
    ```
    ./gradlew test --tests "engine.replay.DbReplayTest" \
      -Dreplay.db=<path to the .db> -Dreplay.updateGolden=true \
-     '-Dreplay.bibles=<first bible>.spb,<second bible>.spb' \
+     '-Dreplay.bibles=<primary>.spb,<secondary>.spb' \
      --rerun-tasks
    ```
    Then re-run WITHOUT `-Dreplay.updateGolden` to confirm comparison mode passes, and confirm
@@ -87,7 +89,14 @@ Discipline rules from past passes — follow these, they each earned their place
    `-Dreplay.updateGolden=true` and summarize the diff (events added/removed and why) in your
    report — the golden diff is the review artifact, even though goldens are no longer committed.
 
-9. **Update `TRAINING_PLAN.md`** — Known Engine Gaps table, Resolved/Built notes, Test Strategy /
-   File Locations — keep it scannable, not a chronological diary.
+9. **Write findings to `SESSIONS.md`, not `TRAINING_PLAN.md`.** `TRAINING_PLAN.md` is read at the
+   start of every pass and must stay under ~250 lines, so a fix earns **one gap-table row**
+   (`Status: FIXED <date>`) plus — only when it changes how future work is done — a line in Workflow /
+   Test Strategy / Conventions / Gotchas. The narrative (real traces, timestamps, sweep tables, golden
+   diffs, rejected hypotheses) goes in `SESSIONS.md` under a dated `## YYYY-MM-DD` heading, newest
+   first. `SESSIONS.md` is gitignored and is **not** read at the start of a pass — open it only to
+   answer a specific question ("has this shape been seen before?", "why is that constant 0.45?").
+   It is the *only* file findings go in: never `AGENT.md`, `CLAUDE.md`, `FEATURES.md`,
+   `DEVELOPMENT_GUIDE.md`, `CODING_STANDARDS.md`, `README.md`, nor a plan or agent-instruction file.
 
 Start with Phase A. Only enter Phase B if there's ground truth or I ask for fixes.

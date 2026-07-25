@@ -87,6 +87,16 @@ object Config {
     // (chapterHistory itself stays unbounded for diagnostics; only the SCAN is capped).
     var chapterHistoryMaxCandidates = 5
 
+    // Retired 2026-07-24: revisiting an EARLIER chapter without restating it turned out not to earn
+    // its keep. Across ten recorded services the operator never once accepted a `chapter-history`
+    // suggestion, and across the eight replayable ones the tier produced a single true positive; the
+    // 2026-07-08 replay had already shown 94 emissions with zero. The pool now holds the current
+    // sticky chapter only, which is the case that actually fires (`chapter-scan`: 12 of 13 correct).
+    // Kept as a flag rather than deleted — the mechanism is sound and cheap to re-enable if a service
+    // ever shows a preacher genuinely working two chapters at once; turn it on and check
+    // `chapter-history`-tagged rows specifically before trusting it.
+    var chapterHistoryEnabled = false
+
     // Verse-side coverage floors for the chapter-scope match (same metric as
     // continuationMinCoverage): the top candidate verse must be substantially PRESENT in the
     // window, not merely share a few words. Stricter for a chapter other than the current

@@ -196,6 +196,11 @@ object DbReplay {
             append(",\"type\":").append(jsonStr(e.type))
             append(",\"matchType\":").append(jsonStr(e.matchType))
             append(",\"ref\":").append(jsonStr(ref))
+            // ref above is the matched MODULE's numbering — replaying the same service against a
+            // differently-numbered module of the same translation shifts it (the two RST files here
+            // disagree on the whole Psalter). The canonical code is what stays comparable, so a
+            // golden diff caused by swapping bibles is visibly distinct from a real behaviour change.
+            append(",\"canon\":").append(jsonStr(e.reference.canonicalCodeStart))
             append(",\"conf\":").append(conf)
             append(",\"tier\":").append(e.tier ?: "null")
             append(",\"bible\":").append(jsonStr(e.translation))

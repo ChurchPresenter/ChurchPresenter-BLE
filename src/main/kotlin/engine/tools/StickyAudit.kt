@@ -1,6 +1,7 @@
 package engine.tools
 
 import engine.detection.BookResolver
+import engine.detection.ReferenceWatcher
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -19,7 +20,7 @@ import java.io.File
  * Usage: ./gradlew stickyAudit --args="/path/to/sticky-log-SESSION.jsonl"
  */
 
-private data class StickyRow(
+internal data class StickyRow(
     val ts: String,
     val prevBook: Int?,
     val prevChapter: Int?,
@@ -29,9 +30,9 @@ private data class StickyRow(
     val translation: String,
 )
 
-private enum class Category { CHAPTER_CLEARED, UNEXPLAINED, SHORT_ALIAS, STEM_OVEREXTENSION, CONFIDENT, OTHER }
+internal enum class Category { CHAPTER_CLEARED, UNEXPLAINED, SHORT_ALIAS, STEM_OVEREXTENSION, CONFIDENT, OTHER }
 
-private data class Verdict(val row: StickyRow, val category: Category, val detail: String)
+internal data class Verdict(val row: StickyRow, val category: Category, val detail: String)
 
 fun main(args: Array<String>) {
     val path = args.firstOrNull()
@@ -83,7 +84,7 @@ private fun parseRow(line: String): StickyRow? = runCatching {
  * heuristic catches it — that one needed a human to actually read the sentence. This tool narrows
  * down which rows are worth reading, it doesn't replace reading them.
  */
-private fun classify(row: StickyRow): Verdict {
+internal fun classify(row: StickyRow): Verdict {
     if (row.prevBook != null && row.prevBook == row.newBook &&
         row.prevChapter != null && row.newChapter == null
     ) {
@@ -97,6 +98,16 @@ private fun classify(row: StickyRow): Verdict {
     val tokens = tokenize("${row.transcript} ${row.translation}")
 
     if (hasMultiTokenAliasHit(tokens, newBook)) return Verdict(row, Category.CONFIDENT, "")
+
+    // Numbered books ("во втором послании Коринфянам" → 2 Corinthians) never appear in the alias
+    // table under their spoken form — the ordinal is read off the surrounding tokens by
+    // ReferenceWatcher.resolveNumberedBookAt. Ask that same function, or every such jump is filed
+    // as UNEXPLAINED, which is the one category that must stay trustworthy: 4 of the 5 UNEXPLAINED
+    // rows across the 2026-07-19 sessions were correct resolutions of exactly this shape, and they
+    // buried the one that was real.
+    if (tokens.indices.any { ReferenceWatcher.resolveNumberedBookAt(tokens, it)?.first == newBook }) {
+        return Verdict(row, Category.CONFIDENT, "")
+    }
 
     // Exact single-token alias match. Length floor of 3 mirrors ReferenceWatcher.classify's own
     // floor for single-token aliases (it skips <=2-char aliases like "мк"/"ре" entirely as too risky
@@ -186,7 +197,9 @@ private fun printReport(path: String, verdicts: List<Verdict>) {
     if (unexplained.isNotEmpty()) {
         println(
             "UNEXPLAINED (${unexplained.size}) — no alias/stem match found for the new book anywhere " +
-                "in the text; likely a NEW, undiagnosed bug pattern:"
+                "in the text; likely a NEW, undiagnosed bug pattern. (One benign cause: the live " +
+                "engine also resolves book names the loaded SPB modules register at startup, which " +
+                "this tool cannot see — e.g. the Russian Synodal names book 65 «Иуда».)"
         )
         unexplained.forEach(::printRow)
         println()

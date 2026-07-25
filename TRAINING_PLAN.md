@@ -15,6 +15,11 @@ improvements in four areas:
 Ground truth is the **live-references log** — what the human operator actually put on screen.
 The **detection-log** is what the engine suggested. The gap between them is what we fix.
 
+This file is the operating manual and is read at the start of every pass — keep it that way. What a
+past pass *found* (traces, timestamps, sweeps, golden diffs) belongs in `SESSIONS.md`, which is local,
+gitignored, and deliberately **not** read at the start of a pass — open it only to answer a specific
+question.
+
 ---
 
 ## Artifact Types
@@ -54,7 +59,8 @@ FN        — operator confirmed, engine missed          → fix; find the missi
 ## Workflow: New Logs Arrive
 
 ```
-1.  Drop detection-log + live-references into Downloads/bible-stt-logs-mac-arm/
+1.  Drop the session folder (db + all jsonl logs) into the local archive:
+    ~/Desktop/bible-stt-history/   — one flat folder, every session ever recorded
 
 2.  Run triage_report.py  (no DB needed — fast, tiny output):
         python tools/triage_report.py \
@@ -82,6 +88,21 @@ FN        — operator confirmed, engine missed          → fix; find the missi
     `src/main/kotlin/engine/tools/StickyAudit.kt` for the exact heuristic and why a naive
     "any stem match is risky" first version was too noisy to use (flagged 35 of 61 real jumps).
 
+2a. Replay with the bibles the SERVICE ran, not whatever loads by default:
+        -Dreplay.bibles='<primary>.spb,<secondary>.spb'   (bibleSettings in ~/.churchpresenter/settings.json)
+    Two modules of the same translation can number Psalms differently — this machine carries a
+    Synodal-numbered RST and a Hebrew-numbered one, both abbreviated "RST". Replaying with the wrong
+    one shifts every Psalm by one, so explicit citations resolve to the neighbouring psalm and every
+    Psalm comparison against the operator's log is off by one. Cross-check: the live detection-log's
+    own chapter numbers must line up with the golden's.
+
+2c. BEFORE believing any FN list, check the .db actually covers the service:
+        max(ts_ms) in the .db  vs  the last live-references ts_ms
+    The Help-Dev snapshot is pulled periodically, so an archived .db can stop early — 2026-07-19_102718
+    ends 5 minutes short, mid-sentence, and all 7 of its "FNs" are references the engine did detect
+    live with no transcript left in the archive to prove it. Anything past the last db row is
+    unscoreable, not a miss.
+
 3.  For each FN in the report:
         a. Identify the missing pattern from the reference text alone
            (if ambiguous, do a targeted DB query for that timestamp)
@@ -92,6 +113,11 @@ FN        — operator confirmed, engine missed          → fix; find the missi
            mechanism-level test — see Test Strategy below — so the next word that falls into the same
            trap is caught automatically, not just the one found today
         d. Fix the engine (BookResolver alias, ReferenceWatcher, ContinuationEngine, Config threshold)
+
+3b. A live-references file with `sessionId: null` is NOT automatically unrelated. Builds before
+    session stamping named it by process-start time instead. Check whether its ts_ms values fall
+    inside the .db's window — if they all do, it is that service's ground truth
+    (`live-references-2026-07-05_10-11-52.jsonl` is 28-for-28 inside `2026-07-05_093218.db`).
 
 4.  For each FP in the report:
         a. Read the trigger text (already in the report — from detection-log transcript field)
@@ -118,6 +144,12 @@ FN        — operator confirmed, engine missed          → fix; find the missi
 | `ReferenceWatcherTest.kt` | Explicit/sticky parsing regression guard | One test per distinct FN/FP pattern found in triage (book/chapter/verse parsing, ordinal resolution, split-utterance behavior), **plus** mechanism-level generalization tests (see below) |
 | `ContinuationEngineTest.kt` | Content-matching regression guard | Sequential next-verse, chapter-scan, and chapter-history resolution/ambiguity-gate cases (synthetic in-memory fixtures — no real Bible files needed) |
 | `DetectionLoggerTest.kt` | Logging-output guard | Minimal coverage of the sticky-change log's file/field shape |
+| `StickyAuditTest.kt` | Triage-tool bucketing guard | That UNEXPLAINED stays the "look here first" category — every resolution route the live engine has must be one the auditor asks about |
+
+Note for `ReferenceWatcherTest`: the suite runs with the **static** alias table only, while the live
+engine also holds every book name the loaded SPB modules register at startup. Any behaviour that
+depends on those (a module naming a book with an ordinary word) is invisible unless the test opts in
+via `withRegisteredBookNames`, which restores the static table afterwards.
 
 Service-level replay exists since 2026-07: `DbReplayTest` replays an archived `.db`
 deterministically (injected clock) against a committed golden, and `replayEval` scores a replay
@@ -146,247 +178,100 @@ that falls into the same trap is caught before a live session hits it, not after
 
 ## Known Engine Gaps
 
-Fix in order: FN first, FP second, PREMATURE third, latency last.
+Fix in order: FN first, FP second, PREMATURE third, latency last. One row per gap — the diagnosis
+narrative for anything marked FIXED is in `SESSIONS.md` under that date, not here.
 
-| Gap | Example | Location | Priority |
+| Gap | Example | Location | Status |
 |---|---|---|---|
-| "27-й стих" parsed as chapter when no inline глава | s4r269 → John 27:28 FP | `ReferenceWatcher` ordinal disambiguation (ExplicitParser retired 2026-07) | FP |
-| Short-alias corroboration too loose for ordinary counting/naming phrases | "Two songs" (translation of "Два пения")→Song of Solomon (22); "осия" ("stubbornness"-adjacent RU word) → Hosea (28), then stuck as the wrong sticky book for ~40 min, causing a cluster of FNs once the service moved to Psalm 14 | `ReferenceWatcher.hasAmbiguousBookCorroboration` — a bare "N X" count phrase satisfies the digit-within-2-tokens check identically to a real "chapter N" citation | FP / FN (recurred with the same "songs" shape in both 2026-07-12 sessions; the "осия" case shows a single bad corroboration can corrupt the sticky book for the rest of the passage, not just one emission — not root-caused deeply enough this session to fix safely, see 2026-07-12 Resolved entry below for what *was* fixed) |
-| PREMATURE verse detections | "John 3:1" before "John 3:16" | `Stabilizer` hold or CP debounce | PREMATURE — **partially resolved, see below** |
-| 3-char real-word aliases on EN track | "job"→Job, "am"→Amos | `BookResolver` per-language scoping | FP |
-| Cadence-adaptive sticky TTL | many book changes/min → shrink TTL | `ReferenceWatcher` / `Config` | continuation |
-| Bare ambiguous numbered books | "Коринфянам"/"Книга царств" without ordinal → which one? | `ReferenceWatcher.resolveNumberedBookAt` | FN (low freq, accepted — deliberately unresolved, see below) |
-| Chapter-scope/history tuning unvalidated | `Config.chapterScopeMinAgreement`/`chapterScopeMinRatio` are starting guesses (0.10 / 1.5) | `Config` | **RESOLVED (provisionally) 2026-07-09** — the 2026-07-08 replay showed 94 chapter-history emissions / 0 TPs; now gated structurally (candidate pool = sticky + 5 most-recent chapters, verse-coverage floors 0.45 scan / 0.6 history, agreement 0.20) → 4 emissions, recall unchanged. Values provisional until more services are recorded |
-| Sequential verse-by-verse reading latency | Luke 2:41-52, Proverbs 3:3-6 read consecutively (one verse per operator click, 4-15s apart) — engine confirms most verses correctly via reverse/continuation, but 5-10s after the operator already advanced (misses triage's +5s window), and ~3 interior verses get no detection at all | `ContinuationEngine` / `Stabilizer` (root cause undiagnosed — may be inherent STT segment-finalization latency, not an engine defect) | **RESOLVED (coverage half) 2026-07-09** — sequential check now scores verse-side coverage instead of window-diluted overlap; Matthew 9:37/11:30 recovered on the replay. Residual STT segment-finalization latency remains outside the engine. **User-facing knob added 2026-07-15** — see "Verse speed" entry below |
-| Stem-prefix over-match on short RU aliases | resolveStem's 4-letter minimum lets short aliases like "откр" (Revelation) match unrelated longer words sharing the root ("открывает"/"открылся" — ordinary verb forms, "he reveals"/"was revealed") | `BookResolver.resolveStem` / `ReferenceWatcher.classify` | **RESOLVED 2026-07-09** — over-extension gate in classify: a token ≥3 chars longer than its matched stem needs corroboration (digit/marker nearby); verified on the 2026-07-08 replay (removed the Revelation sticky pollution, zero TP loss) |
-| "song"/"job"/"при" short-alias false positives | EN translation of Russian singing vocabulary ("петь"/"пение") repeatedly resolves to "song"→Song of Solomon (22); "при" (a common preposition) is itself a registered Proverbs (20) alias | `BookResolver.ALIASES` | **RESOLVED 2026-07-09** — single-token exact aliases ≤4 chars need the same corroboration ambiguous forms do; multi-token and ≥5-char aliases unaffected |
-| "повторить" stem-overextension | "повторить" ("to repeat", ordinary verb) shares a stem with a Deuteronomy ("Второзаконие") alias | `BookResolver.resolveStem` | **RESOLVED 2026-07-09** — covered by the over-extension gate above |
-| EN keyword-after-number citation order | "Job chapter 3 verse 2" parses with chapter/verse swapped | `ReferenceWatcher.interpret` keyword handling | **RESOLVED 2026-07-09** — pending-keyword binding: a chapter/verse keyword with no preceding number binds the NEXT one (both languages; the replay showed the old inversion emitting Matthew 9:9 / Genesis 24:2 as 0.95 explicits). The other half of this gap (colon citations followed by prose, "Job 3:2 tells us…") was **RESOLVED 2026-07-09**: a colon binds buffered numbers, so trailing prose no longer wipes the verse (`colonSeen` in interpret); dots between digits now normalize to colons ("Исайя 26.3"); "исайя" STT spelling added as an Isaiah alias. Verified on the 2026-07-08 replay: rows 757/769/843 upgraded from weak staged detections to explicit tier-1, zero TP loss |
+| Short-alias corroboration too loose for counting/naming phrases | "Two songs" → Song of Solomon; "Job's first trial" → Job | `ReferenceWatcher.isCitationNumber` | **FIXED 2026-07-24** — a SPELLED number only corroborates next to a chapter/verse keyword; digits still count anywhere |
+| English plurals/possessives escape the short-alias gate | "songs"/"job's" fire where "song"/"job" are gated | `ReferenceWatcher.isShortAlias` | **FIXED 2026-07-24** — a plural inherits the gate when its singular is a short alias for the same book ("james"→"jame", "acts"→"act" unaffected) |
+| A Bible version name contains a book name | "New King James version" → James, mid-Psalm-14 | `ReferenceWatcher.isVersionNamePart` | **FIXED 2026-07-24** |
+| Short real-word aliases on the EN track | "am"→Amos and similar 2-3 char forms in prose | `BookResolver` per-language scoping | **OPEN** (FP) — raising `SHORT_ALIAS_MAX_LEN` to 5 was swept 2026-07-24 and rejected: it kills a real explicit `От Иоанна 3:6` |
+| "27-й стих" parsed as chapter when no inline глава | s4r269 → John 27:28 FP | `ReferenceWatcher` ordinal disambiguation | **OPEN** (FP) |
+| Cadence-adaptive sticky TTL | many book changes/min → shrink TTL | `ReferenceWatcher` / `Config` | **OPEN** (continuation) |
+| Bare ambiguous numbered books | "Коринфянам"/"Книга царств" with no ordinal → which one? | `ReferenceWatcher.resolveNumberedBookAt` | **ACCEPTED** — deliberately unresolved, see Conventions below |
+| PREMATURE verse detections | "John 3:1" before "John 3:16" | `Stabilizer` hold or CP debounce | **PARTIAL** — tiering (below) means these stage rather than go live |
+| Sequential verse-by-verse reading latency | one verse per operator click, 4–15 s apart; engine confirms 5–10 s late | `ContinuationEngine` / `Stabilizer` | **PARTIAL 2026-07-09** (verse-side coverage) + user-facing "Verse speed" knob 2026-07-15. Residual is STT segment-finalization latency, outside the engine |
+| Chapter-scope/history thresholds unvalidated | `chapterScopeMinAgreement`/`MinRatio` were starting guesses | `Config` | **FIXED (provisionally) 2026-07-09** — gated structurally; values still provisional |
+| Spelled-ordinal numbered books unresolvable | "Первая книга царств" → 1 Samuel | `ReferenceWatcher.resolveNumberedBookAt` | **FIXED 2026-07-09** |
+| Stem over-match on short RU aliases | "открывает"/"открылся" → Revelation; "повторить" → Deuteronomy | `ReferenceWatcher.classify` over-extension gate | **FIXED 2026-07-09** |
+| Short exact aliases fire from prose | "song"/"job"/"при" | `ReferenceWatcher.classify` | **FIXED 2026-07-09** — single-token exact aliases ≤4 chars need corroboration |
+| EN keyword-after-number citation order | "Job chapter 3 verse 2" parsed with chapter/verse swapped | `ReferenceWatcher.interpret` | **FIXED 2026-07-09** — pending-keyword binding; colon binds buffered numbers |
+| Same-book re-mention clobbers the sticky chapter | "...в 21 главе Откровения." nulls chapter 21 | `ReferenceWatcher.emit` | **FIXED 2026-07-05** |
+| Ambiguous common-word RU aliases hijack the sticky book | "Иоанну"/"бытие" in ordinary prose | `AMBIGUOUS_BOOK_FORMS` + `hasAmbiguousBookCorroboration` | **FIXED 2026-07-05** |
+| Inflected ambiguous words bypass the exact-token gate | genitive "бытия" → Genesis | `AMBIGUOUS_BOOK_STEMS` | **FIXED 2026-07-12** |
+| Verse keyword with no chapter keyword transposes the numbers | "Psalm 10, verse 13" → Psalm 30:10, shipped as `explicit` | `ReferenceWatcher.interpret` | **FIXED 2026-07-12** |
+| A short book name reaches the sticky through the stem path, ungated | "Иуда" (Judas, narrated) → Jude; "осия" → Hosea | `ReferenceWatcher.classify` (`shortAliasRefused`, `BookResolver.isRegisteredOnlyStem`) | **FIXED 2026-07-24** — no golden change; also closes the ~40-min Hosea sticky episode |
+| Ground-truth logs used display chapter/verse | Synodal Ps 23 vs canonical 24 → every Psalm scored as FN | `BibleViewModel.canonicalRefForDisplay` (main repo) | **FIXED 2026-07-24** — see Critical Gotchas below |
+| `.db` snapshot can stop before the service does | `2026-07-19_102718.db` ends 5 min early, mid-sentence | `STTManager.disconnect` (main repo) | **FIXED 2026-07-24** — final snapshot on disconnect; the truncation check stays in the Workflow |
+| `stickyAudit` filed numbered-book resolutions as UNEXPLAINED | "во втором послании Коринфянам" | `engine.tools.StickyAudit` | **FIXED 2026-07-24** |
+| A trailing number became a chapter after a verse was already bound | "стихи 3-го стиха по 6-й" → ch 6 instead of vv 3-6 | `ReferenceWatcher.interpret` `flush()` | **FIXED 2026-07-24** — removed 2 FPs, recovered a verse |
+| A verse number spoken *before* its keyword was discarded | "Псалом 23, 1 стих" emitted chapter-only | `ReferenceWatcher.interpret` `Atom.VerseKw` | **FIXED 2026-07-24** |
+| "откр" (4-char Revelation alias) matches ordinary verbs 1-2 chars longer | "открой"/"открыл" → Revelation; the 2026-07-09 gate needs ≥3 | `AMBIGUOUS_BOOK_STEMS` | **FIXED 2026-07-24** — spelled-out "Откровении" matches the longer stem and is untouched |
+| `replayEval` scored a re-shown verse as a miss | operator walked Psalm 24 twice; 3 of 5 "FNs" were the second pass | `ReplayEval` | **FIXED 2026-07-24** — a go-live is covered when ANY detection names it in-window |
+| A book named before its ordinal resolved to the wrong book | "Иоанн говорит в первом послании" → Gospel, as an auto-go-live tier-1 | `ReferenceWatcher.resolveNumberedBookAhead` | **FIXED 2026-07-24** |
+| A number introduced by "с"/"from" was taken as a chapter | "с 4-го стиха" → Proverbs **4**:3 tier-1 while the reading was Proverbs 3; "From the first verse" → Psalm 1 | `ReferenceWatcher.interpret` (`fromMark`) | **FIXED 2026-07-24** — removed a wrong auto-go-live, added the correct verse |
+| A tier-2 continuation fires on a partial with no cited verse | `19:1:1` at 2026-07-22 row 631, window `["С первого стиха.", "Псалом Давида."]` + partial, translation `["It will be Psalm 23.", "From the first verse."]` | `ReferenceWatcher` / `DetectionEngine` accumulation | **OPEN** — auto-go-live tier, self-corrects 3 s later at row 634. Those exact windows replayed through `process()` resolve correctly, so the corruption comes from an earlier call that emits nothing; reproduce by logging sticky changes during replay (`DetectionLogger.path` is nulled in `DbReplay`, and only `replay.*` properties reach the test JVM — see `build.gradle.kts`) |
+| `chapter-scan` chips are never clicked though usually right | 12/13 TP across 8 services, 0 of 10 accepted | `BibleViewModel` auto-follow tiering | **RESOLVED 2026-07-24** — promoted to auto-go-live |
+| `chapter-history` costs precision and earns nothing | 1 TP in 8 services, never accepted, 94 emissions/0 TP in 2026-07-08 | `Config.chapterHistoryEnabled` | **RETIRED 2026-07-24** — flag off by default; removing it dropped 2 emissions across 8 services with zero recall loss |
+| `replayEval` compared the matched module's own numbering | ground truth is canonical since 2026-07-24; two RST modules here number Psalms differently | `ReplayEval.sameVerse` | **FIXED 2026-07-24** — canonical comparison, legacy display rows still matched the old way |
 
-**Resolved**: spelled-Russian-ordinal + numbered-book resolution ("Первая книга царств" → 1 Samuel,
-"Третья царств" → 1 Kings, "Первое Коринфянам" → 1 Corinthians) was previously a total miss — only
-digit-adjacent aliases ("1 царств") worked, and word ordinals were special-cased for John/Peter only.
-`ReferenceWatcher.resolveNumberedBookAt` (formerly `resolveEpistleAt`) now generalizes this via a
-`NumberedBookSpec` table (base id + variant count) covering Царств (9-12), Паралипоменон (13-14),
-Коринфянам (46-47), Фессалоникийцам/Солунян (52-53), Тимофею (54-55), plus John/Peter as before —
-digit *or* spelled ordinal, with or without an intervening "книга"/"послание" filler word. An explicit
-ordinal is always required for the new families (no "bare marker defaults to 1st" convention, unlike
-John/Peter) — bare "Коринфянам"/"Книга царств" with no ordinal stays intentionally unresolved (see the
-gap row above). Further inflected forms (genitive "тимофея", "коринфян", etc.) should be added to
-`NUMBERED_BOOK_FORMS` the same way as future training data surfaces them. Also fixed as part of the same
-pass: `ReferenceWatcher.emit`'s bare-chapter-continuation branch (book already known via sticky, a later
-utterance names only the chapter) used to fabricate a "verse 1" the same way the book+chapter-together
-case once did — now silently primes the sticky and waits for a real verse instead, matching book+chapter
-grammar split fully across separate utterances ("Первая книга царств." → "15 глава." → "22 стих."
-resolves correctly with nothing shown until the last step).
+### Conventions (decisions, not history)
 
-**Built**: chapter-scoped verse resolution, so **book+chapter alone is enough** — the precise
-`"...15 глава, с 22 по 30 стих."` verse-range grammar is no longer required once book+chapter is known.
-`ContinuationEngine.checkChapterScope` scores every verse in the known chapter(s) against what was
-actually spoken (`AgreementScorer`, the same tool that validates reverse-lookup hits), gated by a
-floor + margin-over-runner-up (mirroring `ReverseLookup`'s ratio gate) so it stays silent rather than
-guessing when two candidates score close together. Logged as `matchType="chapter-scan"` (distinct from
-the cheap sequential `"continuation"` next-3 check) so triage can tell them apart.
+- **A bare numbered book with no ordinal stays unresolved.** "Коринфянам"/"Книга царств" with a
+  marker but no ordinal resolves to nothing — there is no convention that a bare mention means the
+  1st, so guessing would be wrong more often than right. John/Peter are the sole exception: a marker
+  alone ("Послание Иоанна") conventionally means the 1st.
+- **A bare ambiguous word with no corroboration stays unresolved**, at a known recall cost: a bare
+  "Бытие" whose chapter arrives much later will not prime the sticky. No textual way to tell it from
+  ordinary vocabulary.
+- **Never fabricate a missing verse/chapter/book.** Prime the sticky and stay silent instead.
+- **Extensible tables — add forms as data surfaces them, don't special-case at the call site**:
+  `NUMBERED_BOOK_FORMS` (further inflections such as genitive "тимофея"/"коринфян" go here),
+  `AMBIGUOUS_BOOK_FORMS` (exact tokens), `AMBIGUOUS_BOOK_STEMS` (all case endings).
+  `AMBIGUOUS_BOOK_STEMS` is deliberately narrow — stemming "иоанну" would wrongly gate the
+  already-correct genitive/nominative forms.
 
-**Built** (previously "designed, not yet built" above): chapter-history / multiple stickies. A preacher
-revisiting an *earlier* chapter from the same service, without restating its book/chapter, now resolves —
-`checkChapterScope`'s candidate pool is `{current sticky} ∪ {UtteranceState.chapterHistory}`, an
-unbounded, same-service-only, in-memory, recency-deduplicated set of every chapter the sticky has
-pointed at this service (populated in `DetectionEngine.runDetection` right after the explicit/sticky
-watcher runs, so a book+chapter-only announcement is remembered even though it no longer emits a `Ref`).
-Same scoring/gate as chapter-scan; logged as `matchType="chapter-history"` when the winning verse is a
-*different* chapter than the current sticky (rarer/riskier than matching the expected one — worth
-telling apart in triage). **Not yet tuned**: `Config.chapterScopeMinAgreement`/`chapterScopeMinRatio`
-are the same starting guesses noted in the gap row above — widening the candidate pool to multiple
-chapters raises ambiguity risk, so these may need their own, stricter values once real cross-chapter-
-jump examples arrive; don't assume the current defaults are safe at scale without checking `chapter-
-history`-tagged rows specifically in the next real session's detection log.
+### Mechanisms that already exist (don't rebuild)
 
-**Resolved** (2026-07-05 session, diagnosed via the `sticky-log` instrumentation described below):
-the original session's stale-sticky-carryover FNs (Revelation 66:11:1, Proverbs 20:1:15) had no
-single named cause at the time, but a second real session reproduced the same *symptom shape*
-(sticky book/chapter jumping with no matching text) twice, and `sticky-log-*.jsonl` timestamps made
-both traceable to actual utterances this time. Two distinct, unrelated root causes, both fixed in
-`ReferenceWatcher.kt`:
-- **Same-book re-mention clobbers the sticky chapter.** `emit()`'s book branch unconditionally set
-  `sticky.watchChapter = chapter`, including when `chapter` was null on *this* flush — the comment
-  said "a new book always resets the carried chapter," but nothing distinguished a genuinely new
-  book from the *same* book merely mentioned again later in the same growing, bilingual utterance
-  (recall: `DetectionEngine` feeds the full accumulated transcript+translation through
-  `ReferenceWatcher.process()` on every STT update, not a delta — see `runDetection`). Confirmed
-  twice: Russian's common "N глава [Книги]" word order (chapter number *before* the trailing book
-  name — `"...в 21 главе Откровения."` nulled chapter 21 right after setting it), and a bilingual
-  re-mention (`"...Бытия, в 12 главе..."` + EN translation `"...Genesis, in chapter 12..."`, where
-  English's keyword-before-number order lets the filler "in" wipe the buffered chapter number before
-  the segment-end flush, which then read `chapter=null` off the redundant "Genesis" atom). Fixed by
-  only letting an absent chapter reset the sticky when the book atom's `curBook` differs from the
-  already-current `sticky.watchBook`; a same-book re-mention with no chapter attached now preserves
-  whatever chapter was already there instead of nulling it.
-- **Ambiguous common-word RU aliases hijack the sticky book.** The Russian-track sibling of the
-  already-known "3-char real-word aliases on EN track" gap above: dative/locative "Иоанну"/"Иоанне"
-  ("to/about John") narrate the apostle by name in ordinary prose (Revelation narrates in first
-  person) rather than citing the Gospel — a real citation is always genitive/nominative
-  ("Иоанна"/"Иоанн", untouched, already well-tested) — and "бытие"/"быт" is ordinary vocabulary
-  ("being/existence") with the identical surface form as the book title, no grammatical
-  discriminator available. Both hijacked `sticky.watchBook` mid-Revelation-reading with zero
-  supporting context. Fixed via a new `ReferenceWatcher.AMBIGUOUS_BOOK_FORMS` table (mirroring
-  `NUMBERED_BOOK_FORMS`'s extensibility) plus `hasAmbiguousBookCorroboration`: these specific bare
-  forms only resolve to a book atom when reinforced by a chapter/verse digit within 2 tokens, or an
-  explicit book/epistle/gospel marker noun in the preceding 2 tokens — bare prepositions (в/от/из)
-  deliberately do **not** count as corroboration (too common in ordinary prose; the real "бытие"
-  false positive was itself `"...в то бытие"`). Trade-off, stated explicitly: a fully bare "Бытие"
-  mention with the chapter given only much later will now fail to prime the sticky (recall loss) —
-  there's no textual way to distinguish that from ordinary prose using the same word. This mirrors
-  the already-accepted "bare Коринфянам/Царств with a marker but no ordinal stays unresolved" gap
-  above. Add further ambiguous forms to `AMBIGUOUS_BOOK_FORMS` the same way as future training data
-  surfaces them.
-  While verifying these fixes, a **third, mechanically distinct** false-positive was newly observed
-  but not fixed this session (see the Known Engine Gaps table above): `resolveStem`'s 4-letter
-  minimum stem length lets the short alias "откр" (an abbreviation for Откровение/Revelation) match
-  as a *prefix* of unrelated longer words sharing that root — "открывает"/"открылся" ("he
-  reveals"/"was revealed", ordinary verb forms) — which the `AMBIGUOUS_BOOK_FORMS` fix above does
-  not catch, since that gate keys off the exact input token ("откр"), not the stem a longer token
-  happened to match through `resolveStem`. Confirmed in the same real transcript that motivated the
-  "Иоанну" fix above (`"...он удостоил его тому, что открылся."` falsely flipped the sticky book to
-  Revelation). Needs a different gating point (by matched stem, not exact token) — left for a future
-  session rather than bolted on speculatively here.
+- **chapter-scan** — book+chapter alone is enough; `ContinuationEngine.checkChapterScope` scores every
+  verse in the known chapter against what was spoken, with a floor + margin-over-runner-up gate.
+- **chapter-history** — the candidate pool is `{sticky} ∪ {UtteranceState.chapterHistory}`, so a
+  preacher revisiting an earlier chapter resolves without restating it. Logged as a distinct
+  `matchType` because it is rarer and riskier.
+- **Reverse lookup needs no history** — quoting a passage by its text alone already works;
+  `ReverseLookup.search()` runs BM25 over the whole Bible on every utterance.
+- **`stickyAudit`** — auto-triages a sticky log against the engine's own alias/stem data. It cannot
+  see SPB-registered book names, so an UNEXPLAINED row can also mean "resolved via a module's own
+  book name".
+- **`DbReplayTest` / `replayEval`** — deterministic service replay against a local golden, and
+  per-matchType scoring against operator ground truth.
 
-**Resolved** (2026-07-12 session, two new sessions' `stickyAudit`/`replayEval`/`triage_report.py`
-surfaced two previously-undiagnosed bugs, both in `ReferenceWatcher.kt`, both root-caused against
-real `.db`/log text rather than guessed):
-- **Inflected ambiguous words bypassed the 2026-07-05 corroboration gate.** `AMBIGUOUS_BOOK_FORMS`
-  is keyed on exact surface tokens ("бытие"/"быт"), so genitive "бытия" (real trace: a machine-
-  translation tail of "...level of his **being**") reached the inflection-tolerant `resolveStem`
-  path unconditionally (its stem extension is only 1 char, under the over-extension threshold) and
-  falsely resolved to Genesis — sandwiched between two genuine "Psalm 14" mentions in one bilingual
-  utterance, nulling the sticky chapter mid-sermon (`stickyAudit`'s own `CHAPTER-CLEARED SAME-BOOK`
-  category, "should be ~zero"). Fixed with a new stem-keyed `AMBIGUOUS_BOOK_STEMS` map, gating
-  `resolveStem` matches by `BookResolver.stemOf(token)` in addition to the exact-token check —
-  covers every case ending of "бытие" without hardcoding each one. **Deliberately scoped to just
-  "бытие"**, not folded into a blanket stem-based gate for all of `AMBIGUOUS_BOOK_FORMS`: "иоанну"/
-  "иоанне"'s ambiguity is case-specific (only dative/locative), and share a stem with the already-
-  unconditional genitive/nominative "иоанна"/"иоанн" — stemming those too would wrongly demand
-  corroboration for forms that are already correct today.
-- **A verse keyword with no preceding chapter keyword swept the unclaimed chapter number into the
-  verse slot.** Real trace: "Psalm 10, verse 13" (no chapter keyword for "10" — chapter by the bare
-  "book N" convention) parsed with chapter/verse transposed (`ref: "Psalm 30:10"` — with the STT's
-  own transient "13"→"30" mis-hearing folded in) because `interpret()`'s `Atom.VerseKw` branch swept
-  *any* non-empty `recent` buffer into `verseStart` with no check for whether a chapter had actually
-  been bound. Shipped to the operator as `matchType: explicit` — one of the two match types that
-  auto-go-live (no staging safety net). A third, previously-unaddressed shape, distinct from the two
-  2026-07-09 keyword-order fixes below. Fixed by reusing `assignChapterFromRecent()` (already used
-  by `Atom.ChapKw`/`Atom.Colon`) when a verse keyword arrives with no chapter bound yet and a book
-  named this call — the same "bare book number = chapter" convention `flush()`'s own leftover
-  fallback already applies.
+### Provisional constants (all want more data before being trusted)
 
-Both fixes are unit-tested against the real session trigger text (dual-track transcript+translation
-for the first; the exact DB row text, both the STT's transient mis-hearing and the corrected final
-text, for the second) plus a mechanism-level generalization test, in `ReferenceWatcherTest.kt`.
-Golden diff on the two sessions that motivated this: `golden-2026-07-12_092012.jsonl` is
-byte-identical (neither bug's shape occurs in that session — clean no-op); `golden-2026-07-12_173830.jsonl`
-gained exactly one new correct event (`19:10:13`, previously silently dropped) and nothing else
-changed. Note: the specific `CHAPTER-CLEARED` sticky-log event that motivated the first fix does
-**not** disappear from a `stickyAudit` re-run of the *same recorded* `sticky-log-*.jsonl` file — that
-file is a frozen artifact of the live (pre-fix) run and can't retroactively change; the fix is
-verified directly (the exact real trigger text, unit-tested) rather than via re-triaging old logs.
-The `.db`-replay's own segment reconstruction didn't reproduce the identical utterance boundary
-either, so 173830's overall recall only moved from 13/25 to 14/25 in this pass — most of that
-session's remaining Psalm-14-window FNs trace to the separate, unfixed "осия"/Hosea sticky-book
-hijack noted in the gap table above (a stuck wrong sticky book from ~40 minutes earlier in the
-service), not the two bugs fixed here.
+`chapterScopeMinAgreement` / `chapterScopeMinRatio`; verse-coverage floors (0.45 scan / 0.6 history);
+`SHORT_ALIAS_MAX_LEN` = 4; `STEM_MAX_EXTENSION_UNCORROBORATED` = 3; Verse speed presets
+(Balanced `continuationMinCoverage` 0.5 / Fast 0.45, from a 5-value sweep over 4 sessions —
+`DetectionLogger` stamps which preset was active on every row).
 
-`sticky-log-*.jsonl` (see Artifact Types above) traces every sticky change regardless of whether
-anything emits. Independent file, gated by `Config.logStickyChanges` (default on) —
-`triage_report.py` doesn't read it and is unaffected.
+### Two standing caveats
 
-**Built** (2026-07-05 §3): the manual timestamp cross-referencing above — hours of work each of the
-last two sessions — is now automated. `stickyAudit` (`src/main/kotlin/engine/tools/StickyAudit.kt`,
-run via `./gradlew stickyAudit --args="<sticky-log path>"`) replays every recorded jump against the
-live engine's own `BookResolver.ALIASES`/`resolveStem` and buckets it (see Workflow step 2b above).
-Zero production code touched — the tool only *reads* already-public engine data, so it can never
-drift out of sync as the alias table grows. Smoke-tested against the 2026-07-05 session's real
-`sticky-log`: correctly bucketed all three already-fixed/known bugs (`бытие`, `откр`/`открывает`,
-and — a bonus catch — a fourth `CHAPTER-CLEARED` instance from restating "Евангелие от Луки" twice in
-one utterance, the exact same-book-reflush shape, that manual review hadn't caught), at zero
-`UNEXPLAINED` false negatives and with only 26 of 67 total jumps needing any human look (down from
-35+ with a naive "any stem match is risky" first version — see the tool's own doc comment for why
-that version was too noisy). Also surfaced two brand-new candidates ("song"/"при", "повторить" — see
-the gap table above) that manual review across two full sessions had missed entirely.
-
-(Note, unchanged: quoting/reciting an earlier passage by its actual *text*, with no reference cited at
-all, already works today regardless of history — `ReverseLookup.search()` runs BM25 over the whole Bible
-on every utterance already, independent of the sticky/history mechanism above.)
-
-**Consuming-app context** (2026-07 — no engine change, documented here since it affects how urgent the
-gaps above are): ChurchPresenter's "Follow Along" auto-follow feature now tiers its go-live decision by
-`matchType` (see `AGENT.md`'s "Bible Follow Along — Tiered Auto-Follow" note in the main repo). Only
-`explicit`/`continuation` detections push to the output screen automatically; `chapter-scan`/
-`chapter-history`/`reverse` now just stage the browse view for operator confirmation. Practical effect:
-false positives whose `matchType` is `reverse`/`chapter-scan`/`chapter-history` (the short-alias/
-stem-overmatch gaps above, e.g. "song"/"откр"/"повторить") can no longer put a wrong verse live
-unattended during a real service — they're still worth fixing for recall/precision, but they're no
-longer a live-service safety issue. An `explicit`/`continuation` false positive still goes live
-instantly, so those two match types remain the highest-stakes category to get right.
-
-The app's own training logs (`live-references-*.jsonl` / `suggestion-outcomes-*.jsonl`, produced by
-`TrainingDataLogger` — same files `triage_report.py` reads) now also carry this `matchType` field, so
-a future session can directly measure acceptance/dismissal rate per tier (e.g. "were staged
-chapter-history suggestions mostly accepted via double-click, or mostly ignored?") instead of relying
-on the engine's own detection-log alone.
-
-**Validation-coverage gap: the engine is Russian-speech-validated, not English-speech-validated**
-(noted 2026-07-12). Every gate/threshold above (`AMBIGUOUS_BOOK_FORMS`, `STEM_MAX_EXTENSION_UNCORROBORATED`,
-`SHORT_ALIAS_MAX_LEN`, the corroboration digit-window, all of it) was tuned and tested exclusively
-against Russian sermon speech plus its English *machine translation* — every real trigger transcript
-quoted anywhere in this file or `AGENT.md` is Russian-source. `2026-07-12`'s evening service
-(`2026-07-12_173830.db`) was the first session with substantial native English-source preaching
-(`source_language='en'` on 235 of 930 final rows — the morning service that same day was 100%
-Russian-source). Checked `source_language` at each bug/false-positive found that session: the
-"verse keyword with no chapter keyword" shape (fixed 2026-07-12, see Resolved above) and two of
-three short-alias false hits ("james"/"psalm" hijacking the sticky book) all trace to English-source
-rows specifically — natural English citation grammar ("Psalm 10, verse 13", no "chapter" word) and
-English narrative prose colliding with English book-abbreviation aliases are plausible reasons these
-particular shapes never surfaced in two years of Russian-source data. The third short-alias hit that
-same session ("осия"→Hosea) is a Russian-source row — same known bug class as "song"/"job", not new.
-**Practical effect**: don't assume today's fixes "cover" English speech generally — this is a single
-session's worth of data on an entire previously-untested dimension. The next English-heavy session
-should get extra scrutiny rather than being waved through, and any future short-alias false positive
-should be checked against `source_language` before assuming it's the same, already-well-tuned bug
-class as the Russian-track gaps above.
-
-**Built: "Verse speed" — a user-facing knob for the sequential-reading latency gap (2026-07-15).**
-ChurchPresenter's Bible tab already had a "Text match" level chip (off/conservative/balanced/
-aggressive), but that only ever touches `minConfidenceEmit`/`reverseMinScoreRatio`/`stickyTtlMs`/
-`inferBookAtEnd` (`Config.applyLevel`) — it never touched `continuationMinCoverage`, the actual
-floor gating the sequential-reading latency gap above. Added a second, independent knob:
-`Config.applyContinuationSpeed("balanced"|"fast")`, reachable via a new `continuationSpeed` field
-on the existing `set_tuning` WebSocket message (`SocketHandler.kt`), surfaced as its own "Verse
-speed" chip in the app's Bible tab (deliberately scoped to ONLY this one constant, not bundled
-with `chapterScopeMinCoverage`/`chapterHistoryMinCoverage` — those already default lower/faster
-and no session has flagged them as slow).
-
-Preset values picked from a real sweep (not guessed): `continuationMinCoverage` ∈
-{0.5, 0.45, 0.4, 0.35, 0.3} run via `replayEval` against 4 archived sessions (2026-07-08_183702,
-2026-07-12_092012, 2026-07-12_173830, 2026-07-15_184110 — 85 ground-truth references total):
-
-| coverage | recall (matched/85) | note |
-|---|---|---|
-| 0.5 (old default) | 62/85 | baseline |
-| **0.45 ("Fast")** | **63/85** | clean win — identical emission counts to baseline in 3/4 sessions, one FN flips to TP in the 4th, zero regressions |
-| 0.4 | 62/85 | net wash — gains 1 match in one session, *loses* a different 1 elsewhere (`ContinuationEngine.check()` returns the FIRST next-candidate crossing the floor, not the best one, so a looser floor can occasionally lock onto the wrong verse) |
-| 0.35 | 63/85 | same recall as 0.45 but continuation's raw emission volume jumps 48→61 in the busiest session (more chip churn, no extra correct verses) |
-| 0.3 | 64/85 | +1 more than 0.45, but emission volume jumps further to 70 (+46% over baseline) |
-
-Chose **Balanced = 0.5, Fast = 0.45** — the only candidate that's a clean win with no downside
-measured. Values marked provisional in `Config.kt` like every other floor in this file; revisit
-once more sessions accumulate data, and reconsider 0.4/0.35/0.3 only with a larger sample (the
-non-monotonic dip at 0.4 specifically should not be treated as "0.4 is bad" — it's one session's
-coin-flip on a small sample). `DetectionLogger` now stamps every row/session-header with
-`continuationSpeed` and `continuationMinCoverage`, same as `level`, so future triage can tell
-which preset was active. Files: `Config.kt`, `SocketHandler.kt`, `DetectionLogger.kt`,
-`ContinuationEngineTest.kt` (engine-side); `BibleEngineSettings.kt`, `BibleEngineClient.kt`,
-`BibleViewModel.kt`, `BibleTab.kt`, `MainDesktop.kt`, `strings.xml` (app-side, main repo).
-
+- **Russian-validated, not English-validated.** Every gate above was tuned against Russian sermon
+  speech plus its English *machine translation*. Native English preaching is barely represented, and
+  the bugs found in the one such session (2026-07-12 evening) trace specifically to English-source
+  rows — natural English citation grammar and English book abbreviations in prose. Give an
+  English-heavy session extra scrutiny, and check `source_language` before assuming a short-alias FP
+  is the same well-tuned Russian-track class.
+- **Tiered auto-follow changes the stakes per matchType.** `explicit`, `continuation` and — since
+  2026-07-24 — `chapter-scan` push to the output screen automatically; only `reverse` stages the
+  browse view for operator confirmation (`BibleViewModel`'s `instantGoLive` predicate, main repo).
+  `chapter-history` is retired (`Config.chapterHistoryEnabled = false`). A false positive in those
+  three tiers goes live unattended, so **they are the highest-stakes thing to get right** — and
+  "unattended wrong-verse events per service" is the number this training loop exists to drive to
+  zero. A `reverse` false positive is a precision nuisance, not a live-service problem. Both
+  `live-references` and `suggestion-outcomes` carry `matchType`, so acceptance per tier stays
+  measurable — re-check it after this promotion, since `chapter-scan` chips should now be rare
+  (the verse is already live) rather than merely ignored.
 ---
 
 ## Critical Gotchas: Book Numbering
@@ -412,9 +297,19 @@ LXX merges Ps 9+10, shifting most of the Psalter by one.
 - **Never** pass the engine's raw `chapter` straight to display when primary ≠ the engine's
   matched translation.
 
-### Ground-truth logs must use canonical book id
+### Ground-truth logs must use canonical numbering — book, chapter AND verse
 
-`live-references` must log **canonical book id**, not display position + 1.
+`live-references` must log the **canonical** reference (`BXXXCXXXVXXX`, Hebrew numbering), not the
+display position and not the primary Bible's own chapter/verse numbers.
+
+Chapter and verse were display-numbered until 2026-07-24, which scored every Psalm as an FN (Synodal
+23 = canonical 24). Map with `BibleViewModel.canonicalRefForDisplay` → `Bible.getCodeReference`; all
+three logs (`live-references`, `suggestion-outcomes`, `operator-flags`) go through `BibleViewModel`
+and carry `display*` fields alongside the canonical ones.
+
+**When triaging a recording made before 2026-07-24**: its logs are display-numbered — Psalms off by
+one against the engine (except Ps 1–8 and 148–150) and `suggestion-outcomes` book ids are display
+positions. The absence of `display*` fields is how to tell which convention a file follows.
 
 ---
 
@@ -422,7 +317,9 @@ LXX merges Ps 9+10, shifting most of the Psalter by one.
 
 ```
 ChurchPresenter-BLE/
-  TRAINING_PLAN.md                ← this file
+  TRAINING_PLAN.md                ← this file (operating manual — read at the start of every pass)
+  SESSIONS.md                     ← per-pass history, gitignored; NOT read at pass start
+  PROMPT.md                       ← the prompt that starts a pass
   build.gradle.kts                ← `stickyAudit` JavaExec task (engine.tools.StickyAuditKt)
   tools/
     triage_report.py              ← quick plain-text report, no DB needed  ← START HERE
@@ -436,8 +333,9 @@ ChurchPresenter-BLE/
                                      plus mechanism-level invariant/fuzz tests and a growing negative corpus
     ContinuationEngineTest.kt     ← chapter-scan / chapter-history regression guard
     DetectionLoggerTest.kt        ← sticky-change log output guard
+    StickyAuditTest.kt            ← stickyAudit bucketing guard
 
-Downloads/bible-stt-logs-mac-arm/
+~/Desktop/bible-stt-history/   (local archive, never committed)
   detection-log-<session>.jsonl
   live-references-<session>.jsonl
   candidate-log-<session>.jsonl   (when present)

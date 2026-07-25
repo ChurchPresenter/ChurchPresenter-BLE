@@ -1,5 +1,6 @@
 package engine
 
+import engine.Config
 import engine.bible.EngineBook
 import engine.bible.EngineTranslation
 import engine.bible.EngineVerse
@@ -9,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class ContinuationEngineTest {
 
@@ -79,8 +81,35 @@ class ContinuationEngineTest {
     }
 
     // ── Chapter history (revisiting an earlier chapter without restating book/chapter) ──────────
+    //
+    // Retired 2026-07-24 (`Config.chapterHistoryEnabled`, default false): across ten recorded
+    // services the operator never accepted a `chapter-history` suggestion, and the tier produced one
+    // true positive across the eight replayable ones. The mechanism is kept behind the flag, so these
+    // tests enable it explicitly — and [chapter history is not consulted by default] guards the
+    // default that actually ships.
 
-    @Test fun `resolves an earlier chapter from history when it matches far better than the current sticky`() {
+    /** Runs [body] with the retired chapter-history pool switched back on, then restores the flag. */
+    private fun withChapterHistory(body: () -> Unit) {
+        val previous = Config.chapterHistoryEnabled
+        Config.chapterHistoryEnabled = true
+        try { body() } finally { Config.chapterHistoryEnabled = previous }
+    }
+
+    @Test fun `chapter history is not consulted by default`() {
+        val t = fixture(listOf(
+            EngineVerse("9-15-1", 9, 15, 1, "gamma delta", false),
+            EngineVerse("9-10-1", 9, 10, 1, "alpha beta gamma delta epsilon zeta", false),
+        ))
+        val state = stateWithSticky(9, 15, "alpha beta gamma delta epsilon zeta")
+        state.touchChapterHistory(9, 10)
+        val result = ContinuationEngine.checkChapterScope(state, t)
+        assertTrue(
+            result == null || result.verse.chapter == 15,
+            "with the tier retired, only the current sticky chapter may resolve, got $result",
+        )
+    }
+
+    @Test fun `resolves an earlier chapter from history when it matches far better than the current sticky`() = withChapterHistory {
         val t = fixture(listOf(
             EngineVerse("9-15-1", 9, 15, 1, "gamma delta", false),
             EngineVerse("9-10-1", 9, 10, 1, "alpha beta gamma delta epsilon zeta", false),
@@ -93,7 +122,7 @@ class ContinuationEngineTest {
         assertEquals(10, result.verse.chapter)
     }
 
-    @Test fun `stays silent when the current sticky and a historical chapter score equally well`() {
+    @Test fun `stays silent when the current sticky and a historical chapter score equally well`() = withChapterHistory {
         val t = fixture(listOf(
             EngineVerse("9-15-1", 9, 15, 1, "alpha beta gamma", false),
             EngineVerse("9-10-1", 9, 10, 1, "alpha beta gamma", false),
