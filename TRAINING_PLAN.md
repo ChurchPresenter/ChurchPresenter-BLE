@@ -236,9 +236,11 @@ narrative for anything marked FIXED is in `SESSIONS.md` under that date, not her
 
 - **chapter-scan** — book+chapter alone is enough; `ContinuationEngine.checkChapterScope` scores every
   verse in the known chapter against what was spoken, with a floor + margin-over-runner-up gate.
-- **chapter-history** — the candidate pool is `{sticky} ∪ {UtteranceState.chapterHistory}`, so a
-  preacher revisiting an earlier chapter resolves without restating it. Logged as a distinct
-  `matchType` because it is rarer and riskier.
+- **chapter-history** — **OFF since 2026-07-24** (`Config.chapterHistoryEnabled = false`; see the gap
+  table for the evidence). The mechanism still exists: the candidate pool becomes
+  `{sticky} ∪ {UtteranceState.chapterHistory}`, so a preacher revisiting an earlier chapter resolves
+  without restating it, logged as a distinct `matchType` because it is rarer and riskier. If it is
+  ever switched back on, judge it on `chapter-history`-tagged rows specifically.
 - **Reverse lookup needs no history** — quoting a passage by its text alone already works;
   `ReverseLookup.search()` runs BM25 over the whole Bible on every utterance.
 - **`stickyAudit`** — auto-triages a sticky log against the engine's own alias/stem data. It cannot
@@ -272,6 +274,11 @@ narrative for anything marked FIXED is in `SESSIONS.md` under that date, not her
   `live-references` and `suggestion-outcomes` carry `matchType`, so acceptance per tier stays
   measurable — re-check it after this promotion, since `chapter-scan` chips should now be rare
   (the verse is already live) rather than merely ignored.
+  **Watch the promotion.** `chapter-scan` was 12/13 correct as a staged tier, so going live unattended
+  should put roughly **one wrong verse on screen per ~8 services** — an accepted trade for the twelve
+  it gets right, not a surprise. Reconsider it if a Help-Dev `wrong_passage` flag lands on a
+  `chapter-scan` detection, or if the tier shows up in a pass's wrong-verse-live count; reverting is a
+  one-word edit to `BibleViewModel`'s `instantGoLive` predicate.
 ---
 
 ## Critical Gotchas: Book Numbering
