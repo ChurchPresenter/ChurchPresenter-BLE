@@ -168,4 +168,82 @@ object Config {
             "fast"     -> continuationMinCoverage = 0.45
         }
     }
+
+    // ── Bible version detection ───────────────────────────────────────────────────
+    // Which TRANSLATION the speaker is reading from, scored across every .spb in the bible root
+    // (not just the two ChurchPresenter selected — the reader's version is often one the operator
+    // hasn't loaded). REPORT ONLY: nothing here ever feeds back into which verse is detected.
+    //
+    // Every value below is provisional and unswept — unlike the detection floors above, no recorded
+    // service has been scored against ground truth yet. They are reasoned defaults, deliberately
+    // strict, on the principle that reporting nothing beats reporting a coin flip.
+
+    var versionDetectionEnabled = System.getProperty("engine.versionDetection")?.toBooleanStrictOrNull() ?: true
+
+    // Versions actually recognizable this session, logged in the per-session header. Without it a row
+    // naming "NASB" can't be read back later: what the engine could possibly have answered depends
+    // entirely on which files happened to be in the user's folder at the time.
+    var versionCorpusLabels: List<String> = emptyList()
+
+    // Cap on .spb files indexed for version scoring. A seek index is ~250 KB per bible, so this is a
+    // runaway guard for an absurd folder, not a budget — set generously ON PURPOSE. The cap is a
+    // filename-sorted prefix, and the folder walk is recursive: a tight cap silently truncates to an
+    // alphabetical slice (16 over a real 71-file collection kept ACV through EMTV and dropped the
+    // KJV and the NASB), which makes the right answer unreachable rather than merely unlikely.
+    // ChurchPresenter's own selected bibles are always indexed regardless of this.
+    var versionMaxCorpusBibles = 96
+
+    // Above this token-Jaccard two modules are treated as the SAME version and collapsed into one
+    // group. Without this, near-duplicate files of one translation (this repo's dev machine carries
+    // two ~97%-identical RST modules) split the vote and tie forever, so every service reports
+    // nothing. Genuinely distinct family members (KJV vs NKJV, ~0.7-0.85) stay separate and compete.
+    var versionDuplicateJaccard = 0.95
+
+    // Language coherence floor vs the DETECTING translation's rendering of the same verse. Separates
+    // English from German/French/Spanish, which all share Script.LATIN. Content-based because the
+    // `language` field is filename-derived and unreliable (see SpbLoader.extractLanguage).
+    var versionCandidateMinJaccard = 0.15
+
+    // The text window must actually contain the verse before that verse gets a vote. Partial windows
+    // are the dominant noise source and are exactly where the miss penalty below misfires. A side
+    // effect worth stating: tier-1 explicit references contribute nothing, because they fire on
+    // "turn to John 3:16" before any verse text has been spoken. That is correct.
+    var versionMinVerseCoverage = 0.55
+
+    // Alpha: weight of NEGATIVE evidence (a distinctive word this version has that the speaker did
+    // NOT say) relative to positive. Needed at all because positive-only scoring has a length bias —
+    // a wordier rendering has more distinctive tokens and so more chances to collect noise. Held to
+    // half because absence has many innocent explanations (partial window, dropped word, the reader
+    // paraphrased or stumbled) while presence has essentially one.
+    var versionMissPenalty = 0.5
+
+    // Per-verse cap on positive evidence, so one long highly-divergent verse can't decide a service.
+    var versionMaxVerseDelta = 8.0
+
+    // Per-verse decay on the running tally: ~6.7-verse memory. This is what handles a change of
+    // reader mid-service — there is no speaker diarization in the STT feed, so a new reader with a
+    // different bible re-converges by out-weighing the decayed history rather than by being detected.
+    var versionDecay = 0.85
+
+    // No single verse may decide a version — many verses are word-identical across translations.
+    var versionMinVerses = 2
+
+    // Absolute floors on the verdict, in units of "distinctive words of evidence" (the weighting is
+    // normalized so a word unique to one version scores 1.0 regardless of corpus size).
+    var versionMinEvidence = 3.0
+    // Margin over the runner-up to SEAT an answer. An absolute DIFFERENCE, never a ratio: with
+    // negative evidence the scores go negative, where a ratio is meaningless (-4/-8 = 0.5; 6/-2 = -3).
+    var versionMinMargin = 2.0
+
+    // Margin required to REPLACE a standing answer with a different version — deliberately above
+    // versionMinMargin. The answer is sticky (a preacher reads one bible for a whole service and
+    // moves between passages freely), so changing what the operator is already looking at should
+    // take more evidence than putting it there did; otherwise a couple of ambiguous verses flip it
+    // back and forth. Weak evidence never un-publishes an answer at all — a verse that fails to
+    // separate the candidates means "no new information", not "forget what you knew".
+    var versionSwitchMinMargin = 3.0
+
+    // Silence long enough to be a different part of the service — drop the tally and the answer.
+    // This, not a passage change, is what ends stickiness.
+    var versionResetGapMs = 120_000L
 }

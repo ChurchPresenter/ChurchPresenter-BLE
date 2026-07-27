@@ -29,6 +29,13 @@ object AgreementScorer {
         return common.toDouble() / queryWords.size
     }
 
+    /**
+     * The module's single text-normalization path — public so version detection scores against the
+     * exact same token shape the agreement/coverage gates use. Keep it the only one: the `ё→е` fold
+     * and the `\p{L}` class below were both bug fixes, and a second tokenizer would silently drift.
+     */
+    fun tokens(text: String): Set<String> = tokenize(text)
+
     private fun tokenize(text: String): Set<String> =
         // \p{L}: keep ALL letters (the old a-z+Cyrillic class shredded accented Latin —
         // "hätte" -> "h"+"tte" — for the non-EN/RU bibles). ё→е folds standard Russian
