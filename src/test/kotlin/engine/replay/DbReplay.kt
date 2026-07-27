@@ -224,6 +224,19 @@ object DbReplay {
         "stickyTtlMs" to Config.stickyTtlMs,
         "reverseEnabled" to Config.reverseEnabled,
         "logCandidates" to Config.logCandidates,
+        "versionDetectionEnabled" to Config.versionDetectionEnabled,
+        "versionMinVerses" to Config.versionMinVerses,
+        "versionMinEvidence" to Config.versionMinEvidence,
+        "versionMinMargin" to Config.versionMinMargin,
+        "versionDecay" to Config.versionDecay,
+        "versionMissPenalty" to Config.versionMissPenalty,
+        "versionMaxVerseDelta" to Config.versionMaxVerseDelta,
+        "versionMinVerseCoverage" to Config.versionMinVerseCoverage,
+        "versionCandidateMinJaccard" to Config.versionCandidateMinJaccard,
+        "versionDuplicateJaccard" to Config.versionDuplicateJaccard,
+        "versionMaxCorpusBibles" to Config.versionMaxCorpusBibles,
+        "versionResetGapMs" to Config.versionResetGapMs,
+        "versionSwitchMinMargin" to Config.versionSwitchMinMargin,
     )
 
     fun restoreConfig(snapshot: Map<String, Any>) {
@@ -237,5 +250,18 @@ object DbReplay {
         Config.stickyTtlMs = snapshot["stickyTtlMs"] as Long
         Config.reverseEnabled = snapshot["reverseEnabled"] as Boolean
         Config.logCandidates = snapshot["logCandidates"] as Boolean
+        Config.versionDetectionEnabled = snapshot["versionDetectionEnabled"] as Boolean
+        Config.versionMinVerses = snapshot["versionMinVerses"] as Int
+        Config.versionMinEvidence = snapshot["versionMinEvidence"] as Double
+        Config.versionMinMargin = snapshot["versionMinMargin"] as Double
+        Config.versionDecay = snapshot["versionDecay"] as Double
+        Config.versionMissPenalty = snapshot["versionMissPenalty"] as Double
+        Config.versionMaxVerseDelta = snapshot["versionMaxVerseDelta"] as Double
+        Config.versionMinVerseCoverage = snapshot["versionMinVerseCoverage"] as Double
+        Config.versionCandidateMinJaccard = snapshot["versionCandidateMinJaccard"] as Double
+        Config.versionDuplicateJaccard = snapshot["versionDuplicateJaccard"] as Double
+        Config.versionMaxCorpusBibles = snapshot["versionMaxCorpusBibles"] as Int
+        Config.versionResetGapMs = snapshot["versionResetGapMs"] as Long
+        Config.versionSwitchMinMargin = snapshot["versionSwitchMinMargin"] as Double
     }
 }

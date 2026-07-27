@@ -24,15 +24,17 @@ import java.util.concurrent.ConcurrentHashMap
  * `scripture.detected` may be followed by an `updated` for the same ref; consumers treat
  * both alike.)
  *
- * [broadcastStatus] additionally caches the latest engine-status message and replays it to
- * every newly registered session, so a late-joining ChurchPresenter learns the engine's STT
- * link state without waiting for the next transition.
+ * [broadcastStatus] and [broadcastVersion] additionally cache their latest message and replay
+ * it to every newly registered session, so a late-joining ChurchPresenter learns the engine's
+ * STT link state and the version being read without waiting for the next transition. Both are
+ * standing state rather than events, which is why they are replayed and scripture is not.
  */
 class Broadcaster {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { encodeDefaults = true }
     private val sessions = ConcurrentHashMap<WebSocketSession, Channel<String>>()
     @Volatile private var latestStatus: String? = null
+    @Volatile private var latestVersion: String? = null
 
     fun register(session: WebSocketSession) {
         val channel = Channel<String>(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -45,6 +47,7 @@ class Broadcaster {
             }
         }
         latestStatus?.let { channel.trySend(it) }
+        latestVersion?.let { channel.trySend(it) }
     }
 
     fun unregister(session: WebSocketSession) {
@@ -61,6 +64,18 @@ class Broadcaster {
     fun broadcastStatus(statusJson: String) {
         latestStatus = statusJson
         for (channel in sessions.values) channel.trySend(statusJson)
+    }
+
+    /**
+     * Sends the detected Bible version to all sessions and replays it to future ones.
+     *
+     * Separate from the scripture events because the answer is established asynchronously, several
+     * verses after the detection that first hinted at it — so it can never ride the event that
+     * produced it. Clients apply it to rows already on screen.
+     */
+    fun broadcastVersion(versionJson: String) {
+        latestVersion = versionJson
+        for (channel in sessions.values) channel.trySend(versionJson)
     }
 
     fun close() {

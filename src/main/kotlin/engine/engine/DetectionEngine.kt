@@ -8,6 +8,8 @@ import engine.bible.Script
 import engine.detection.ContinuationEngine
 import engine.detection.ReferenceWatcher
 import engine.detection.ReverseLookup
+import engine.version.VersionCorpus
+import engine.version.VersionDetector
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -43,6 +45,14 @@ data class ScriptureEvent(
     // Which STT track(s) corroborate this detection — subset of {"transcription","translation"}.
     // A corroboration/confidence signal for the UI: both present = strongest.
     val tracks: List<String> = emptyList(),
+    // ── Bible version detection (report only; never influences which verse is detected) ──
+    // Which TRANSLATION the speaker appears to be reading from, scored across every bible in the
+    // folder — not just the two indexed for detection, so this is frequently a version the operator
+    // has not loaded and is NOT where [verseText] came from (that is [translation]). Null whenever
+    // the evidence is thin or the field is too close to call.
+    val detectedVersion: String? = null,
+    val detectedVersionId: String? = null,
+    val detectedVersionConfidence: Double? = null,
     // ── Diagnostics (logged for training; not used by the UI) ──
     val tier: Int? = null,             // explicit-ref tier (1/2); null for reverse/continuation
     val bm25Score: Double? = null,     // reverse: top BM25 score
@@ -60,6 +70,18 @@ class DetectionEngine(
     // gate (sticky TTL, dedup TTL, continuation timeout, re-emit cooldown) from recorded ts_ms
     // values — making a replayed session fully deterministic. Production uses the wall clock.
     private val clock: () -> Long = System::currentTimeMillis,
+    // Every version the engine can RECOGNIZE, which is wider than the translations above (those are
+    // the two ChurchPresenter selected for detection). Supplied as a function because the corpus is
+    // indexed on a background thread at startup — until it lands this is EMPTY and no version is
+    // ever reported, which is harmless. Defaulted so replay and tests construct the engine unchanged.
+    private val versionCorpus: () -> VersionCorpus = { VersionCorpus.EMPTY },
+    // Notified when the detected READING VERSION changes. Pushed to clients separately from the
+    // scripture events because it is settled asynchronously, usually a verse or two after the
+    // detection that first hinted at it — so it can never ride the event that produced it.
+    onVersionChanged: (VersionDetector.Verdict?) -> Unit = {},
+    // Injectable so tests can score inline and assert without racing the scoring thread. Null means
+    // the detector runs its own thread, which is what production wants.
+    versionScoringExecutor: java.util.concurrent.Executor? = null,
 ) {
 
     // Index every loaded translation by default; an explicit Config.defaultTranslations allow-list
@@ -69,6 +91,9 @@ class DetectionEngine(
         else translations.filter { it.id in Config.defaultTranslations }.ifEmpty { translations }
     private val index = BibleIndex(indexTranslations)
     private val stabilizer = Stabilizer(clock)
+    private val versionDetector =
+        if (versionScoringExecutor == null) VersionDetector(versionCorpus, clock, onVersionChanged)
+        else VersionDetector(versionCorpus, clock, onVersionChanged, versionScoringExecutor)
     // Access-ordered LRU bound: the STT path only ever uses the single id "live", but the
     // direct-WS input path takes caller-supplied ids with no natural end — a long-lived
     // standalone server must not grow without bound. All access is confined to the single
@@ -157,6 +182,7 @@ class DetectionEngine(
             for (ref in refs) {
                 val event = buildRefEvent(state, ref) ?: continue
                 val decision = stabilizer.evaluate(refKey(event), event.confidence)
+                observeVersion(state, event)
                 val out = decision.toEvent(event)
                 if (out != null) {
                     recordDetection(state, out)
@@ -213,6 +239,7 @@ class DetectionEngine(
             ).copy(bm25Score = reverse.score, bm25Ratio = reverse.ratio.takeIf { it.isFinite() && it < 1e6 })
             if (agreement >= Config.reverseMinAgreement) {
                 val decision = stabilizer.evaluate(refKey(event), event.confidence)
+                observeVersion(state, event)
                 val out = decision.toEvent(event)
                 if (out != null) {
                     recordDetection(state, out)
@@ -253,6 +280,7 @@ class DetectionEngine(
                 verseEnd = null,
             ).copy(type = "scripture.continuation")
             val decision = stabilizer.evaluate(refKey(event), event.confidence)
+            observeVersion(state, event)
             if (decision !is Stabilizer.EmitDecision.Suppress) {
                 recordDetection(state, event)
                 return logged(state, listOf(event))
@@ -295,9 +323,14 @@ class DetectionEngine(
         return stamped
     }
 
-    /** Stamps the per-utterance context (segment, tracks, speech type, sticky) onto an event. */
-    private fun stamp(state: UtteranceState, event: ScriptureEvent, now: Long): ScriptureEvent =
-        event.copy(
+    /** Stamps the per-utterance context (segment, tracks, speech type, sticky, version) onto an event. */
+    private fun stamp(state: UtteranceState, event: ScriptureEvent, now: Long): ScriptureEvent {
+        // Read the version verdict here, the one funnel both emissions and candidate rows pass
+        // through. Note the explicit-reference path calls recordDetection once per event and then
+        // logs them together, so a multi-event utterance stamps all of its events with the tally's
+        // final state rather than with a per-event snapshot. Acceptable: the verdict moves slowly.
+        val version = versionDetector.verdict()
+        return event.copy(
             segmentId = state.segmentId ?: event.segmentId,
             sttStartTime = state.sttStartTime ?: event.sttStartTime,
             sessionId = state.sessionId ?: event.sessionId,
@@ -305,7 +338,11 @@ class DetectionEngine(
             speechType = state.speechType ?: event.speechType,
             stickyBook = state.watchBook ?: event.stickyBook,
             stickyChapter = state.watchChapter ?: event.stickyChapter,
+            detectedVersion = version?.label,
+            detectedVersionId = version?.id,
+            detectedVersionConfidence = version?.confidence,
         )
+    }
 
     /** The STT track(s) that support [event] — verse text read in the track, or its citation spoken there. */
     private fun corroboratingTracks(state: UtteranceState, event: ScriptureEvent, now: Long): List<String> {
@@ -440,6 +477,36 @@ class DetectionEngine(
             latin > 0 -> Script.LATIN
             else -> Script.OTHER
         }
+    }
+
+    /**
+     * Feeds one built detection to version scoring — emitted or suppressed alike.
+     *
+     * Called after the emit decision on every path, so it can never influence what goes on screen,
+     * and returns immediately (the scoring itself runs on the detector's own thread). Suppressed
+     * duplicates are included deliberately: a verse deduped as "already showing" is still a verse
+     * being read aloud right now, which is exactly the evidence this wants, and dropping it starves
+     * short or slowly-read passages. [VersionDetector] de-dupes per verse code, so nothing is
+     * double-counted.
+     *
+     * The TRANSCRIPT track alone: the translation track is machine-translated output whose word
+     * choices belong to no bible, and they would land squarely in the slots that distinguish one
+     * version from another.
+     */
+    private fun observeVersion(state: UtteranceState, event: ScriptureEvent) {
+        versionDetector.observe(
+            code = event.reference.canonicalCodeStart,
+            bookId = event.reference.bookId,
+            chapter = event.reference.chapter,
+            anchorText = event.verseText,
+            spoken = state.transcript,
+            script = dominantScript(state.transcript),
+        )
+    }
+
+    /** Stops the version scoring thread. */
+    fun shutdown() {
+        versionDetector.shutdown()
     }
 
     private fun recordDetection(state: UtteranceState, event: ScriptureEvent) {

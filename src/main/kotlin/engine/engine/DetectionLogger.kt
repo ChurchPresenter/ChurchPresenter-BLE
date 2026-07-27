@@ -135,6 +135,9 @@ object DetectionLogger {
                 if (sessionId != null) append("\"sessionId\":\"").append(esc(sessionId!!)).append("\",")
                 else append("\"sessionId\":null,")
                 append("\"bibles\":[").append(Config.loadedBibles.joinToString(",") { "\"" + esc(it) + "\"" }).append("],")
+                // Which versions could possibly have been named by version detection this session —
+                // wider than "bibles" above, and the only way to interpret a detectedVersion later.
+                append("\"versionCorpus\":[").append(Config.versionCorpusLabels.joinToString(",") { "\"" + esc(it) + "\"" }).append("],")
                 append("\"level\":\"").append(esc(Config.level)).append("\",")
                 append("\"continuationSpeed\":\"").append(esc(Config.continuationSpeed)).append("\",")
                 append("\"continuationMinCoverage\":").append(Config.continuationMinCoverage).append(',')
@@ -219,6 +222,12 @@ object DetectionLogger {
             // ── Diagnostics for tuning: which Bible matched, a stable group key, the decision
             //    sub-scores, and the speech/sticky context at the moment it fired. ──
             append("\"matchedBible\":\"").append(esc(event.translation)).append("\",")
+            // Which version the speaker appeared to be READING — distinct from matchedBible above,
+            // which is only where the displayed text was taken from. Omitted entirely when the
+            // evidence didn't separate the candidates.
+            event.detectedVersion?.let { append("\"detectedVersion\":\"").append(esc(it)).append("\",") }
+            event.detectedVersionId?.let { append("\"detectedVersionId\":\"").append(esc(it)).append("\",") }
+            event.detectedVersionConfidence?.let { append("\"detectedVersionConfidence\":").append(it).append(',') }
             append("\"refKey\":\"").append(r.bookId).append(':').append(r.chapter).append(':').append(r.verseStart).append("\",")
             // book/chapter/verseStart above are the MATCHED MODULE's own numbering, which differs
             // between modules of the same translation: this machine carries two RST files, one

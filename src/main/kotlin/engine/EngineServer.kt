@@ -7,6 +7,8 @@ import engine.engine.DetectionLogger
 import engine.socket.Broadcaster
 import engine.socket.SttSocketClient
 import engine.socket.bibleEngineSocket
+import engine.version.VersionCorpus
+import engine.version.VersionCorpusLoader
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -18,6 +20,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Handle to a running engine instance; call [stop] to shut it (and its STT client) down.
@@ -51,11 +54,32 @@ object EngineServer {
             return null
         }
         Config.loadedBibles = translations.map { it.id }
-        val detectionEngine = DetectionEngine(translations)
+
+        // Version detection recognizes translations beyond the two indexed above — the reader's
+        // bible is often not one the operator loaded. Built on a background thread because it scans
+        // every .spb in the folder; until it lands no version is reported, which costs nothing.
+        val versionCorpus = AtomicReference(VersionCorpus.EMPTY)
+        if (Config.versionDetectionEnabled) {
+            Thread({
+                runCatching { versionCorpus.set(VersionCorpusLoader.load(priorityFiles = bibleFiles)) }
+                    .onFailure { System.err.println("bible-engine: version corpus failed to build — ${it.message}") }
+            }, "ble-version-corpus").apply { isDaemon = true }.start()
+        }
+        val broadcaster = Broadcaster()
+        val detectionEngine = DetectionEngine(
+            translations,
+            versionCorpus = versionCorpus::get,
+            onVersionChanged = { verdict ->
+                broadcaster.broadcastVersion(
+                    if (verdict == null) """{"type":"version_detected","version":null,"versionId":null,"confidence":null}"""
+                    else """{"type":"version_detected","version":"${jsonEscape(verdict.label)}",""" +
+                        """"versionId":"${jsonEscape(verdict.id)}","confidence":${verdict.confidence}}"""
+                )
+            },
+        )
         // Grow a labeled corpus for free: every emitted detection + its triggering text is appended
         // here, so each live service becomes regression data without manual annotation.
         DetectionLogger.path = File(bibleRoot, "detection-log.jsonl").absolutePath
-        val broadcaster = Broadcaster()
 
         // ALL detection-state mutation (DetectionEngine.utterances, Stabilizer maps, Config
         // tuning) is confined to this one thread — the invariant that makes the engine safe
@@ -121,6 +145,11 @@ object EngineServer {
             runCatching { broadcaster.close() }
             runCatching { detectionScope.cancel() }
             runCatching { detectionExecutor.shutdown() }
+            runCatching { detectionEngine.shutdown() }
         }
     }
+
+    /** Minimal escaping for the two version fields, which are Bible abbreviations and derived ids. */
+    private fun jsonEscape(s: String): String =
+        s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", " ")
 }
