@@ -40,8 +40,14 @@ object SpbLoader {
     }
 
     /**
-     * Loads only the named SPB files (by file name, e.g. ChurchPresenter's primary + secondary
-     * bibles), in the given order. Falls back to [loadAll] when the list is empty.
+     * Loads only the named SPB files (ChurchPresenter's primary + secondary bibles), in the given
+     * order. Falls back to [loadAll] when the list is empty.
+     *
+     * Each name is either a path relative to the bible root (`ENG/King James/kjv.spb` — what CP
+     * stores now that it scans subfolders) or a bare file name (what it stored before, and what
+     * still identifies a file sitting at the root). Relative paths are matched FIRST: a collection
+     * can hold two files of the same name in different folders, and resolving those by name alone
+     * silently picks whichever the walk happened to reach last.
      */
     fun loadSelected(fileNames: List<String>): List<EngineTranslation> {
         if (fileNames.isEmpty()) return loadAll()
@@ -50,11 +56,13 @@ object SpbLoader {
             System.err.println("Bible root not found: ${Config.bibleRoot}")
             return emptyList()
         }
-        val byName = root.walk().filter { it.isFile && it.name.endsWith(".spb") }.associateBy { it.name }
+        val spbFiles = root.walk().filter { it.isFile && it.name.endsWith(".spb") }.toList()
+        val byPath = spbFiles.associateBy { it.toRelativeString(root).replace('\\', '/') }
+        val byName = spbFiles.associateBy { it.name }
         val seenIds = mutableMapOf<String, Int>()
         val translations = mutableListOf<EngineTranslation>()
         for (name in fileNames.distinct()) {
-            val file = byName[name] ?: continue
+            val file = byPath[name.replace('\\', '/')] ?: byName[name] ?: continue
             try {
                 val t = parseFile(file, seenIds) ?: continue
                 if (t.byBCV.size >= 10) translations.add(t)
@@ -83,23 +91,18 @@ object SpbLoader {
         val results = mutableListOf<EngineTranslation>()
 
         for (file in spbFiles) {
-            val lang = extractLanguage(file.name)
             val abbr = file.useLines(Charsets.UTF_8) { lines ->
                 lines.take(20).firstOrNull { it.startsWith("##Abbreviation:") }
                     ?.removePrefix("##Abbreviation:")?.trim()
             }
             if (abbr.isNullOrBlank()) continue
 
-            val sanitized = abbr.replace(Regex("[^A-Za-z0-9]"), "")
-            val baseId = "${lang}_${sanitized}"
-            val count = seenIds.getOrDefault(baseId, 0)
-            seenIds[baseId] = count + 1
-            val id = if (count == 0) baseId else "${baseId}_${count + 1}"
-
+            // Peek at the id before committing to a full parse. Snapshot the counts first so the
+            // parse below re-derives the very same id (deriveId mutates seenIds).
+            val before = seenIds.toMutableMap()
+            val id = deriveId(file.name, abbr, seenIds)
             if (id !in targets) continue
-
-            // Pass a copy with baseId rolled back so parseFile computes the same id
-            val parseSeenIds = seenIds.toMutableMap().apply { this[baseId] = count }
+            val parseSeenIds = before
             try {
                 val t = parseFile(file, parseSeenIds) ?: continue
                 if (t.byBCV.size >= 10) results.add(t)
@@ -155,11 +158,7 @@ object SpbLoader {
 
         if (abbreviation.isBlank()) return null
 
-        val sanitizedAbbr = abbreviation.replace(Regex("[^A-Za-z0-9]"), "")
-        val baseId = "${lang}_${sanitizedAbbr}"
-        val count = seenIds.getOrDefault(baseId, 0)
-        seenIds[baseId] = count + 1
-        val id = if (count == 0) baseId else "${baseId}_${count + 1}"
+        val id = deriveId(file.name, abbreviation, seenIds)
 
         val byBCV = HashMap<Triple<Int, Int, Int>, EngineVerse>(verses.size * 2)
         val byChapterMut = HashMap<Pair<Int, Int>, MutableList<EngineVerse>>()
@@ -234,4 +233,18 @@ object SpbLoader {
 
     private fun extractLanguage(filename: String): String =
         filename.substringBefore("_").uppercase()
+
+    /**
+     * The translation id every consumer keys on: `<LANG>_<sanitizedAbbreviation>`, with `_2`/`_3`
+     * suffixes when two files claim the same abbreviation. [seenIds] carries the per-scan occurrence
+     * counts and is mutated. Shared with the version corpus so its ids line up with
+     * [Config.loadedBibles] and the detection-log rows.
+     */
+    internal fun deriveId(fileName: String, abbreviation: String, seenIds: MutableMap<String, Int>): String {
+        val sanitized = abbreviation.replace(Regex("[^A-Za-z0-9]"), "")
+        val baseId = "${extractLanguage(fileName)}_$sanitized"
+        val count = seenIds.getOrDefault(baseId, 0)
+        seenIds[baseId] = count + 1
+        return if (count == 0) baseId else "${baseId}_${count + 1}"
+    }
 }
