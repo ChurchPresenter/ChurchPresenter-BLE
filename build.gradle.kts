@@ -45,6 +45,7 @@ java {
 
 tasks.test {
     useJUnitPlatform()
+    maxHeapSize = "2g"
     systemProperty("bible.root", "${projectDir}/Bibles")
     // Forward the optional .db replay path + fixture id to the forked test JVM (DbReplayTest skips
     // if unset).
