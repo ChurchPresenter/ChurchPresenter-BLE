@@ -40,19 +40,34 @@ fun transcriptionUpdate(payload: JSONObject): SttUpdate? =
 fun translationUpdate(payload: JSONObject): SttUpdate? =
     buildUpdate(payload, textField = "translated_text")
 
+/**
+ * A trimmed string field, or null when absent, blank or JSON `null`.
+ *
+ * `JSONObject.optString` coerces a JSON `null` into the four-character string `"null"` rather than
+ * returning the default, so every `optString(...).takeIf { it.isNotEmpty() }` in this file silently
+ * accepted `"null"` as a real value. Observed live: a `segment_id` of null reached the detection log
+ * and the operator-flag log as `"segmentId":"null"`, where it becomes a fake correlation key that
+ * joins every such row to every other. The same coercion applied to `session_id` (the primary join
+ * key across all three artifacts) and to the transcript text itself, where it would have fed the
+ * literal word "null" into detection as if it had been spoken.
+ */
+private fun JSONObject.stringOrNull(key: String): String? {
+    if (!has(key) || isNull(key)) return null
+    return optString(key, "").trim().takeIf { it.isNotEmpty() }
+}
+
 private fun buildUpdate(payload: JSONObject, textField: String): SttUpdate? {
     val completed = ArrayList<String>(2)
     val segments = payload.optJSONArray("segments")
     if (segments != null) {
         val start = maxOf(0, segments.length() - 2)
         for (i in start until segments.length()) {
-            segments.optJSONObject(i)?.optString(textField, "")
-                ?.trim()?.takeIf { it.isNotEmpty() }?.let { completed.add(it) }
+            segments.optJSONObject(i)?.stringOrNull(textField)?.let { completed.add(it) }
         }
     }
     val inProgress = when (val ip = payload.opt("in_progress")) {
         is String -> ip
-        is JSONObject -> ip.optString(textField, "")
+        is JSONObject -> ip.stringOrNull(textField)
         else -> null
     }
     val text = windowedText(completed, inProgress) ?: return null
@@ -67,14 +82,12 @@ private fun buildUpdate(payload: JSONObject, textField: String): SttUpdate? {
 
 // Best-effort speech_type from the payload (e.g. "Speaking"/"Quiet"/"Music"); null if absent so
 // detection behaves unchanged until the STT stream provides it. Drives the music precision gate.
-private fun speechTypeOf(payload: JSONObject): String? =
-    payload.optString("speech_type", "").trim().takeIf { it.isNotEmpty() }
+private fun speechTypeOf(payload: JSONObject): String? = payload.stringOrNull("speech_type")
 
 // Stable per-service session id (e.g. the STT db base name "2026-06-25_120605"), emitted as a
 // top-level `session_id` in every payload. Ties all three artifacts (STT db, engine detection-log,
 // CP live-references) with an exact join. Null until the STT app ships the field.
-private fun sessionIdOf(payload: JSONObject): String? =
-    payload.optString("session_id", "").trim().takeIf { it.isNotEmpty() }
+private fun sessionIdOf(payload: JSONObject): String? = payload.stringOrNull("session_id")
 
 // The STT segment id that produced this update — the clock-free correlation key matching the STT
 // db's `segment_id` column (TEXT = str(id)). Prefers an explicit string `segment_id`, then falls
@@ -90,7 +103,7 @@ private fun extractSegmentId(payload: JSONObject): String? {
 }
 
 private fun segmentIdOf(obj: JSONObject): String? {
-    obj.optString("segment_id", "").trim().takeIf { it.isNotEmpty() }?.let { return it }
+    obj.stringOrNull("segment_id")?.let { return it }
     if (obj.has("id") && !obj.isNull("id")) return obj.optInt("id").toString()
     return null
 }
