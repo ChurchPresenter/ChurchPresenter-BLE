@@ -66,4 +66,50 @@ class StickyAuditTest {
         val v = classify(row("...", newBook = 19, prevBook = 19, prevChapter = 14, newChapter = null))
         assertEquals(Category.CHAPTER_CLEARED, v.category)
     }
+
+    // ── Rows that are not book changes at all ─────────────────────────────────
+
+    @Test fun `a row with no new book is not a jump`() {
+        assertEquals(Category.OTHER, classify(row("что-то сказано", newBook = null, prevBook = 43)).category)
+    }
+
+    @Test fun `staying on the same book while changing chapter is not a jump`() {
+        val v = classify(row("...", newBook = 43, prevBook = 43, prevChapter = 1, newChapter = 2))
+        assertEquals(Category.OTHER, v.category, "only the book is audited here; chapters move constantly")
+    }
+
+    @Test fun `a chapter clear on a different book is judged on its text, not structurally`() {
+        // CHAPTER_CLEARED is specifically the same-book reflush shape.
+        val v = classify(row("совсем ничего", newBook = 65, prevBook = 43, prevChapter = 3, newChapter = null))
+        assertEquals(Category.UNEXPLAINED, v.category)
+    }
+
+    // ── Where the supporting text is found ────────────────────────────────────
+
+    @Test fun `the translation side can explain a jump on its own`() {
+        // A bilingual feed carries the citation on whichever side was spoken.
+        val v = classify(row("", newBook = 66, translation = "откровение"))
+        assertEquals(Category.CONFIDENT, v.category, v.detail)
+    }
+
+    @Test fun `case and punctuation do not prevent a match`() {
+        val v = classify(row("Итак, ОТКРОВЕНИЕ!", newBook = 66))
+        assertEquals(Category.CONFIDENT, v.category, v.detail)
+    }
+
+    @Test fun `an ordinary grammatical ending is not treated as suspicious`() {
+        // Russian inflection routinely adds a character or two ("Луки"); flagging that would flag
+        // most rows and make the whole report noise.
+        val v = classify(row("евангелие от луки", newBook = 42))
+        assertEquals(Category.CONFIDENT, v.category, v.detail)
+    }
+
+    @Test fun `a first jump with no previous book is classified on its text like any other`() {
+        assertEquals(Category.CONFIDENT, classify(row("откровение", newBook = 66, prevBook = null)).category)
+    }
+
+    @Test fun `every verdict carries the row it judged, so the report can print it`() {
+        val original = row("откровение", newBook = 66)
+        assertEquals(original, classify(original).row)
+    }
 }
