@@ -151,6 +151,70 @@ class SpbVersionIndexTest {
         assertNull(SpbVersionIndex.build(f, mutableMapOf()))
     }
 
+    // ── Why a module is missing from the corpus ───────────────────────────────
+    //
+    // Real case: a 24-module folder on a network share produced a corpus of 3, and the loader said
+    // nothing about the other 21 — indistinguishable from the feature being broken. Each drop is
+    // reported with a reason that points at the right thing to fix.
+
+    @Test fun `a module that is not a usable bible is reported, named and distinguished`() {
+        writeSpb("ENG_GOOD.spb", "GOOD", cyrillicVerses)
+        File(dir, "ENG_BAD.spb")
+            .writeText("##Title:No abbreviation\n-----\nB040C018V013\t40\t18\t13\ttext\n", Charsets.UTF_8)
+        Config.bibleRoot = dir.absolutePath
+
+        val skips = mutableListOf<Pair<String, String>>()
+        val corpus = VersionCorpusLoader.load(onSkip = { name, reason -> skips += name to reason })
+
+        assertEquals(listOf("GOOD"), corpus.labels, "the usable module still loads")
+        assertEquals(1, skips.size, "exactly the one bad file is reported, got $skips")
+        assertEquals("ENG_BAD.spb", skips[0].first)
+        // "not a usable module" sends the operator to the file's contents; the unreadable wording is
+        // reserved for an I/O failure, which is a different fix entirely.
+        assertTrue(skips[0].second.contains("not a usable module"), "got: ${skips[0].second}")
+    }
+
+    @Test fun `a module dropped by the cap says so rather than vanishing`() {
+        repeat(3) { i ->
+            writeSpb("ENG_C$i.spb", "C$i", cyrillicVerses.map { it.copy(third = "вариант $i уникальный текст стиха") })
+        }
+        Config.bibleRoot = dir.absolutePath
+        Config.versionMaxCorpusBibles = 2
+
+        val skips = mutableListOf<Pair<String, String>>()
+        VersionCorpusLoader.load(onSkip = { name, reason -> skips += name to reason })
+
+        assertEquals(listOf("ENG_C2.spb"), skips.map { it.first }, "the file past the cap, got $skips")
+        assertTrue(skips[0].second.contains("cap"), "got: ${skips[0].second}")
+    }
+
+    @Test fun `a module merged into another is reported against the label that absorbed it`() {
+        // Same abbreviation from two files: collapsed by the publisher's own word, and previously
+        // the only trace was a corpus one shorter than the folder.
+        writeSpb("RUS_A.spb", "RST", cyrillicVerses)
+        writeSpb("RUS_B.spb", "RST", cyrillicVerses.map { it.copy(third = "(22:1) «${it.third}» иными словами") })
+        Config.bibleRoot = dir.absolutePath
+
+        val skips = mutableListOf<Pair<String, String>>()
+        assertEquals(listOf("RST"), VersionCorpusLoader.load(onSkip = { n, r -> skips += n to r }).labels)
+
+        assertEquals(listOf("RUS_B.spb"), skips.map { it.first }, "got $skips")
+        assertTrue(skips[0].second.contains("merged"), "got: ${skips[0].second}")
+        assertTrue(skips[0].second.contains("RST"), "names the label that absorbed it: ${skips[0].second}")
+    }
+
+    @Test fun `a corpus that loads cleanly reports no skips at all`() {
+        writeSpb("ENG_AAA.spb", "AAA", cyrillicVerses.map { it.copy(third = "первый перевод уникальными словами здесь") })
+        writeSpb("ENG_BBB.spb", "BBB", cyrillicVerses.map { it.copy(third = "второй совсем другой лексикой оборотами") })
+        Config.bibleRoot = dir.absolutePath
+
+        val skips = mutableListOf<String>()
+        val corpus = VersionCorpusLoader.load(onSkip = { name, _ -> skips += name })
+
+        assertEquals(listOf("AAA", "BBB"), corpus.labels)
+        assertTrue(skips.isEmpty(), "nothing to report when every module made it, got $skips")
+    }
+
     @Test fun `a malformed verse code is rejected rather than packed`() {
         assertNull(SpbVersionIndex.packCode("nonsense"))
         assertNull(SpbVersionIndex.packCode("BxxxCyyyVzzz"))
