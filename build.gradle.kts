@@ -32,6 +32,10 @@ dependencies {
     // Replay harness only: read archived service .db backups in DbReplayTest. The .db files are
     // never committed; the test skips gracefully when -Dreplay.db is unset (see DbReplayTest).
     testImplementation("org.xerial:sqlite-jdbc:3.45.3.0")
+    // A real WebSocket client for EngineServerTest, which drives the engine over loopback exactly
+    // as ChurchPresenter does rather than reaching past the socket.
+    testImplementation("io.ktor:ktor-client-cio:$ktorVersion")
+    testImplementation("io.ktor:ktor-client-websockets:$ktorVersion")
 }
 
 application {
