@@ -246,4 +246,33 @@ object Config {
     // Silence long enough to be a different part of the service — drop the tally and the answer.
     // This, not a passage change, is what ends stickiness.
     var versionResetGapMs = 120_000L
+
+    // ── Sole-candidate reporting ──────────────────────────────────────────────────
+    //
+    // A library with ONE bible in the language being read (a Russian-only folder is the common case)
+    // can never produce a comparative answer: the scoring below weighs each word by how rare it is
+    // among the renderings of a verse, and with one rendering there is no rarity. Reported nothing,
+    // forever, and looked like a broken feature.
+    //
+    // What is reportable there is a WEAKER claim, and these knobs keep it honest: not "this version
+    // beat the others" but "the only translation installed for this language, and the words match".
+    // Nothing was ruled out, so the bar for saying it is higher and the confidence it can reach is
+    // capped — see versionSoleCandidateMaxConfidence.
+    var versionSoleCandidateEnabled = System.getProperty("engine.versionSoleCandidate")
+        ?.toBooleanStrictOrNull() ?: true
+
+    // Deliberately above versionMinVerseCoverage: that floor exists to stop a partial window voting
+    // in a race between candidates, where a wrong guess is corrected by the competitors. Here there
+    // is no competitor to correct anything, so the reading itself has to carry the claim.
+    var versionSoleCandidateMinCoverage = 0.75
+
+    // Flat per-verse evidence. Not a weighted sum — with one rendering every weight is 0/0. Sized so
+    // that versionMinVerses qualifying verses clear versionMinEvidence under versionDecay and no
+    // fewer do: 2.0 + 2.0*0.85 = 3.7 at two verses, 2.0 at one.
+    var versionSoleCandidateDelta = 2.0
+
+    // A comparative answer earns its confidence from the margin over a runner-up. A sole candidate
+    // has no runner-up, so its margin is just its own tally and the usual curve would read ~0.7-0.9
+    // for what is really "nothing contradicted it". Held to the bottom half of the scale.
+    var versionSoleCandidateMaxConfidence = 0.5
 }

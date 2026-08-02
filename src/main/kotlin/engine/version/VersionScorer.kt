@@ -47,9 +47,12 @@ object VersionScorer {
         val viable = candidates.filter { c ->
             c.script == script && jaccard(AgreementScorer.tokens(c.text), anchorTokens) >= Config.versionCandidateMinJaccard
         }
-        // With a single rendering there is nothing to be distinctive *against*; no weight is definable.
+        // With a single rendering there is nothing to be distinctive *against*; no weight is
+        // definable, so the comparative path below cannot run. What IS reportable is the weaker
+        // claim handled by [soleCandidate] — see Config's sole-candidate section.
         val n = viable.size
-        if (n < 2) return emptyList()
+        if (n == 0) return emptyList()
+        if (n == 1) return soleCandidate(viable[0], spoken)
 
         // The window must actually contain the verse. Partial windows are the dominant noise source
         // and are where the miss penalty below would misfire hardest — a version looks wrong merely
@@ -87,6 +90,25 @@ object VersionScorer {
         // row of zeroes, so it doesn't count toward the detector's minimum-verses gate — two such
         // verses are no more evidence than none.
         return if (anyDistinctive) out else emptyList()
+    }
+
+    /**
+     * The one-rendering case: a flat vote for the only candidate, if the reading actually covers it.
+     *
+     * This is NOT the comparative claim the rest of this object makes, and it must not be mistaken
+     * for one — nothing was ruled out, because there was nothing to rule out. It says "the only
+     * translation installed for this language, and the speaker's words match it", which is what an
+     * operator with a single-translation library wants on screen and cannot otherwise get.
+     *
+     * The coverage bar is higher than the comparative path's for a reason worth keeping: there, a
+     * partial window that flatters the wrong candidate is corrected by the competitors it is scored
+     * against. Here there are none, so nothing catches a bad window except the bar itself.
+     */
+    private fun soleCandidate(candidate: VersionCandidate, spoken: String): List<Delta> {
+        if (!Config.versionSoleCandidateEnabled) return emptyList()
+        val coverage = AgreementScorer.coverage(candidate.text, spoken)
+        if (coverage < Config.versionSoleCandidateMinCoverage) return emptyList()
+        return listOf(Delta(candidate.id, candidate.label, Config.versionSoleCandidateDelta))
     }
 
     private fun jaccard(a: Set<String>, b: Set<String>): Double {

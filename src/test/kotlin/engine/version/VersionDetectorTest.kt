@@ -215,4 +215,56 @@ class VersionDetectorTest {
         d.read("B040C018V014", KJV_MATT_18_14, "   ")
         assertNull(d.verdict())
     }
+
+    // ── A single-translation library ──────────────────────────────────────────
+
+    /** One bible in the language being read — the Russian-only folder that prompted this. */
+    private val soleCorpus = MapVersionCorpus(
+        mapOf(
+            MATT_18_13 to listOf(candidate("KJV", KJV_MATT_18_13)),
+            "B040C018V014" to listOf(candidate("KJV", KJV_MATT_18_14)),
+        )
+    )
+
+    private fun soleDetector() = VersionDetector(
+        corpus = { soleCorpus },
+        clock = { now },
+        onVerdictChanged = { changes.add(it) },
+        scoringExecutor = { it.run() },
+    )
+
+    @Test fun `the only installed translation is named once enough verses match it`() {
+        val d = soleDetector()
+        d.read(MATT_18_13, KJV_MATT_18_13, spokenKjv13)
+        assertNull(d.verdict(), "the minimum-verses gate still applies with one candidate")
+
+        d.read("B040C018V014", KJV_MATT_18_14, spokenKjv14)
+        assertEquals("KJV", assertNotNull(d.verdict()).label)
+    }
+
+    @Test fun `a sole candidate never reads as confidently as a corroborated one`() {
+        val sole = soleDetector()
+        sole.read(MATT_18_13, KJV_MATT_18_13, spokenKjv13)
+        sole.read("B040C018V014", KJV_MATT_18_14, spokenKjv14)
+        val soleConfidence = assertNotNull(sole.verdict()).confidence
+
+        assertTrue(
+            soleConfidence <= Config.versionSoleCandidateMaxConfidence,
+            "nothing was ruled out, so this must stay capped, got $soleConfidence",
+        )
+
+        // The same reading against a corpus that COULD have contradicted it earns more, which is the
+        // distinction the cap exists to preserve — otherwise both look equally settled on screen.
+        changes.clear()
+        val compared = detector()
+        compared.read(MATT_18_13, KJV_MATT_18_13, spokenKjv13)
+        compared.read("B040C018V014", KJV_MATT_18_14, spokenKjv14)
+        val comparedVerdict = assertNotNull(compared.verdict())
+        assertEquals("KJV", comparedVerdict.label)
+        assertTrue(
+            comparedVerdict.confidence > soleConfidence,
+            "ruling out a competitor must count for more than having none: " +
+                "${comparedVerdict.confidence} vs $soleConfidence",
+        )
+    }
 }

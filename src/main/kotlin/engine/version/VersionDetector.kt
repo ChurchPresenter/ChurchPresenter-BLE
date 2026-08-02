@@ -8,6 +8,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import kotlin.math.exp
+import kotlin.math.min
 
 /**
  * Accumulates per-verse evidence from [VersionScorer] into a running answer to "which translation is
@@ -132,7 +133,12 @@ class VersionDetector(
         val margin = leader.value - (ranked.getOrNull(1)?.value ?: 0.0)
         if (margin < Config.versionMinMargin) return null
         // Saturating: ~0.49 at the 2.0 margin floor, ~0.8 at 5, ~0.96 at 10 distinctive words clear.
-        val confidence = 1.0 - exp(-margin / 3.0)
+        var confidence = 1.0 - exp(-margin / 3.0)
+        // Only ever one candidate: the margin is the tally itself, against nothing. The curve above
+        // would read that as strong agreement when it is really "nothing contradicted it" — there
+        // was nothing that could have. Capped so a single-translation library cannot present as more
+        // certain than a corpus that actually ruled competitors out.
+        if (ranked.size == 1) confidence = min(confidence, Config.versionSoleCandidateMaxConfidence)
         return Verdict(leader.key, labels[leader.key] ?: leader.key, (confidence * 1000).toInt() / 1000.0)
     }
 
