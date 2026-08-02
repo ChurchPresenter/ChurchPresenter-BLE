@@ -2,6 +2,7 @@ plugins {
     kotlin("jvm") version "2.3.10"
     kotlin("plugin.serialization") version "2.3.10"
     application
+    jacoco
 }
 
 group = "engine"
@@ -45,6 +46,7 @@ java {
 
 tasks.test {
     useJUnitPlatform()
+    finalizedBy(tasks.jacocoTestReport)
     maxHeapSize = "2g"
     systemProperty("bible.root", "${projectDir}/Bibles")
     // Forward the optional .db replay path + fixture id to the forked test JVM (DbReplayTest skips
@@ -76,4 +78,16 @@ tasks.register<JavaExec>("stickyAudit") {
     description = "Audits a sticky-log-*.jsonl for unexplained/risky sticky jumps (see TRAINING_PLAN.md)."
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("engine.tools.StickyAuditKt")
+}
+
+// Coverage for this module's own logic. UI composables and the CLI diagnostic entry points are
+// excluded: the first need a real display, the second exist to print to stdout.
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports { xml.required.set(true); html.required.set(true) }
+    classDirectories.setFrom(
+        fileTree(layout.buildDirectory.dir("classes/kotlin/main")) {
+            exclude("**/ui/**", "**/MainKt*", "**/*Dump*", "**/MakeSampleDeck*")
+        }
+    )
 }
