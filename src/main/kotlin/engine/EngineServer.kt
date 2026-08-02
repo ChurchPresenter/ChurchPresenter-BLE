@@ -61,7 +61,15 @@ object EngineServer {
         val versionCorpus = AtomicReference(VersionCorpus.EMPTY)
         if (Config.versionDetectionEnabled) {
             Thread({
-                runCatching { versionCorpus.set(VersionCorpusLoader.load(priorityFiles = bibleFiles)) }
+                runCatching {
+                    VersionCorpusLoader.load(
+                        priorityFiles = bibleFiles,
+                        onSkip = { name, reason ->
+                            System.err.println("bible-engine: version corpus skipped $name — $reason")
+                        },
+                    )
+                }
+                    .onSuccess { versionCorpus.set(it); System.err.println(versionCorpusReport(it.labels)) }
                     .onFailure { System.err.println("bible-engine: version corpus failed to build — ${it.message}") }
             }, "ble-version-corpus").apply { isDaemon = true }.start()
         }
@@ -147,6 +155,22 @@ object EngineServer {
             runCatching { detectionExecutor.shutdown() }
             runCatching { detectionEngine.shutdown() }
         }
+    }
+
+    /**
+     * One startup line saying whether version detection can actually produce an answer.
+     *
+     * Without it the feature is indistinguishable from broken on a folder that cannot support it:
+     * [engine.version.VersionScorer] needs two renderings of a verse to weigh one against the other,
+     * so a corpus below that reports nothing, forever, and says so nowhere. Counting the corpus is
+     * necessary but not sufficient — the two must also be in the language being read, which only the
+     * scorer can know — hence the wording of the size-1 case.
+     */
+    internal fun versionCorpusReport(labels: List<String>): String = when (labels.size) {
+        0 -> "bible-engine: version detection inactive — no bibles could be indexed from ${Config.bibleRoot}"
+        1 -> "bible-engine: version detection inactive — corpus holds only ${labels[0]}; " +
+            "reporting a version needs at least two DIFFERENT translations in the language being read"
+        else -> "bible-engine: version corpus ready — ${labels.size} translations: ${labels.joinToString(", ")}"
     }
 
     /** Minimal escaping for the two version fields, which are Bible abbreviations and derived ids. */

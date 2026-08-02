@@ -42,8 +42,16 @@ object VersionCorpusLoader {
      *
      * [priorityFiles] (ChurchPresenter's selected bibles, by file name) are indexed ahead of
      * everything else so the cap can never exclude the very translations in use.
+     *
+     * [onSkip] is called once per `.spb` that is in the folder but not in the corpus, with the reason.
+     * Silence here is how a folder of 24 modules can yield a corpus of 3 and look like a broken
+     * feature instead of an unreadable share: every drop below is individually plausible, and
+     * together they decide whether version detection can answer at all.
      */
-    fun load(priorityFiles: List<String> = emptyList()): VersionCorpus {
+    fun load(
+        priorityFiles: List<String> = emptyList(),
+        onSkip: (fileName: String, reason: String) -> Unit = { _, _ -> },
+    ): VersionCorpus {
         val root = File(Config.bibleRoot)
         if (!root.exists()) return VersionCorpus.EMPTY
         val all = runCatching {
@@ -58,10 +66,31 @@ object VersionCorpusLoader {
             .take(Config.versionMaxCorpusBibles)
         if (files.isEmpty()) return VersionCorpus.EMPTY
 
+        val capped = files.toHashSet()
+        all.filterNot { it in capped }.forEach { onSkip(it.name, "over the ${Config.versionMaxCorpusBibles}-module cap") }
+
         val seenIds = mutableMapOf<String, Int>()
-        val indexes = files.mapNotNull { runCatching { SpbVersionIndex.build(it, seenIds) }.getOrNull() }
+        val indexes = files.mapNotNull { f ->
+            val built = runCatching { SpbVersionIndex.build(f, seenIds) }
+            val index = built.getOrNull()
+            // A throw and a null mean different things to whoever is reading this: the first is the
+            // file or the share, the second is the module's own contents. Reporting them the same
+            // way would send an operator to reinstall a bible whose disk was the problem.
+            when {
+                built.isFailure -> onSkip(f.name, "unreadable — ${built.exceptionOrNull()?.describe()}")
+                index == null -> onSkip(f.name, "not a usable module — no ##Abbreviation header, or under ten verses")
+            }
+            index
+        }
         if (indexes.isEmpty()) return VersionCorpus.EMPTY
-        return SpbVersionCorpus(collapseDuplicates(indexes)).also { Config.versionCorpusLabels = it.labels }
+
+        val kept = collapseDuplicates(indexes)
+        if (kept.size < indexes.size) {
+            val survivors = kept.mapTo(HashSet()) { it.fileName }
+            indexes.filterNot { it.fileName in survivors }
+                .forEach { onSkip(it.fileName, "merged — another module already covers ${it.label}") }
+        }
+        return SpbVersionCorpus(kept).also { Config.versionCorpusLabels = it.labels }
     }
 
     /**
@@ -128,6 +157,10 @@ object VersionCorpusLoader {
         val step = (shared.size / SAMPLE_SIZE).coerceAtLeast(1)
         return shared.filterIndexed { i, _ -> i % step == 0 }.take(SAMPLE_SIZE).toIntArray()
     }
+
+    /** Type plus message: an `AccessDeniedException` whose message is only a path says nothing alone. */
+    private fun Throwable.describe(): String =
+        listOfNotNull(this::class.simpleName, message).joinToString(": ")
 
     private fun jaccard(a: Set<String>, b: Set<String>): Double {
         if (a.isEmpty() || b.isEmpty()) return 0.0

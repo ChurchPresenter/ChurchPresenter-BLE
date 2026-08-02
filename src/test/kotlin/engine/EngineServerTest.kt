@@ -255,4 +255,44 @@ class EngineServerTest {
         }
         assertTrue(pong.contains("pong"), "the tuning message was accepted")
     }
+
+    // ── The version-corpus startup report ─────────────────────────────────────
+    //
+    // Version detection cannot answer from a corpus of fewer than two renderings, and used to say
+    // so nowhere: on a folder holding one translation per language it reported nothing forever and
+    // looked identical to a broken feature. These pin the line that tells the operator which it is.
+
+    @Test
+    fun `a corpus that could never answer is reported as inactive, naming the root`() {
+        val saved = Config.bibleRoot
+        try {
+            Config.bibleRoot = temp.absolutePath
+            val report = EngineServer.versionCorpusReport(emptyList())
+            assertTrue(report.contains("inactive"), "got: $report")
+            assertTrue(report.contains(temp.absolutePath), "names the folder to look in: $report")
+        } finally {
+            Config.bibleRoot = saved
+        }
+    }
+
+    @Test
+    fun `a single-translation corpus is reported as inactive and says what would fix it`() {
+        val report = EngineServer.versionCorpusReport(listOf("KJV"))
+        assertTrue(report.contains("inactive"), "got: $report")
+        assertTrue(report.contains("KJV"), "names what it did index: $report")
+        // The actionable half: the operator's folder can hold several bibles and still fail, because
+        // the two must share the language being read. A bare count would not say that.
+        assertTrue(report.contains("language being read"), "explains the same-language rule: $report")
+    }
+
+    @Test
+    fun `a usable corpus reports its size and every translation in it`() {
+        val report = EngineServer.versionCorpusReport(listOf("KJV", "NASB", "ESV"))
+        assertTrue(report.contains("ready"), "got: $report")
+        assertTrue(report.contains("3 translations"), "states the size: $report")
+        for (label in listOf("KJV", "NASB", "ESV")) {
+            assertTrue(report.contains(label), "names $label: $report")
+        }
+        assertTrue(!report.contains("inactive"), "a usable corpus is not reported as inactive: $report")
+    }
 }

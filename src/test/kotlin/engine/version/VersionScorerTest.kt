@@ -15,6 +15,8 @@ class VersionScorerTest {
     private var penalty = 0.0
     private var cap = 0.0
     private var jaccard = 0.0
+    private var soleEnabled = true
+    private var soleCoverage = 0.0
 
     @BeforeTest fun snapshot() {
         enabled = Config.versionDetectionEnabled
@@ -22,6 +24,8 @@ class VersionScorerTest {
         penalty = Config.versionMissPenalty
         cap = Config.versionMaxVerseDelta
         jaccard = Config.versionCandidateMinJaccard
+        soleEnabled = Config.versionSoleCandidateEnabled
+        soleCoverage = Config.versionSoleCandidateMinCoverage
     }
 
     @AfterTest fun restore() {
@@ -30,6 +34,8 @@ class VersionScorerTest {
         Config.versionMissPenalty = penalty
         Config.versionMaxVerseDelta = cap
         Config.versionCandidateMinJaccard = jaccard
+        Config.versionSoleCandidateEnabled = soleEnabled
+        Config.versionSoleCandidateMinCoverage = soleCoverage
     }
 
     private fun score(candidates: List<VersionCandidate>, spoken: String, anchor: String = KJV_MATT_18_13) =
@@ -82,8 +88,52 @@ class VersionScorerTest {
         assertTrue(d.getValue("NASB") > d.getValue("PARA"), "expected NASB over the padded text, got $d")
     }
 
-    @Test fun `a single version yields nothing to be distinctive against`() {
+    // ── The sole candidate ────────────────────────────────────────────────────
+    //
+    // A library with one bible in the language being read cannot produce a comparative answer, and
+    // used to produce none at all. It reports the weaker claim instead: the only translation
+    // installed, when the reading actually covers it. These pin both halves of that.
+
+    @Test fun `the only version in the language is reported when the reading covers it`() {
+        val d = score(listOf(candidate("KJV", KJV_MATT_18_13)), KJV_MATT_18_13)
+        assertEquals(setOf("KJV"), d.keys, "got $d")
+        assertEquals(Config.versionSoleCandidateDelta, d.getValue("KJV"))
+    }
+
+    @Test fun `a sole candidate the reading barely touches is not reported`() {
+        // No competitor exists to correct a flattering partial window, so the bar is the only guard.
+        val barelyRelated = "and he said unto them verily"
+        assertTrue(
+            score(listOf(candidate("KJV", KJV_MATT_18_13)), barelyRelated).isEmpty(),
+            "a window this thin must not seat an answer",
+        )
+    }
+
+    @Test fun `sole-candidate reporting can be switched off`() {
+        Config.versionSoleCandidateEnabled = false
         assertTrue(score(listOf(candidate("KJV", KJV_MATT_18_13)), KJV_MATT_18_13).isEmpty())
+    }
+
+    @Test fun `a sole candidate is judged on its own coverage bar, not the comparative one`() {
+        // The two bars move independently: raising the sole bar alone must silence it, which is what
+        // proves it is not reading versionMinVerseCoverage.
+        Config.versionSoleCandidateMinCoverage = 0.99
+        Config.versionMinVerseCoverage = 0.1
+        val partial = KJV_MATT_18_13.split(" ").take(6).joinToString(" ")
+        assertTrue(score(listOf(candidate("KJV", KJV_MATT_18_13)), partial).isEmpty(), "got: $partial")
+    }
+
+    @Test fun `two versions still take the comparative path, not the sole-candidate one`() {
+        // Guards the boundary: the flat sole-candidate vote must not leak into the n>=2 case, where
+        // the answer has to come from rarity weighting.
+        val spoken = "if it turns out that he finds it truly i say to you he rejoices over it " +
+            "more than over the ninety nine which have not gone astray"
+        val d = score(listOf(candidate("KJV", KJV_MATT_18_13), candidate("NASB", NASB_MATT_18_13)), spoken)
+        assertEquals(setOf("KJV", "NASB"), d.keys, "got $d")
+        assertTrue(
+            d.values.none { it == Config.versionSoleCandidateDelta },
+            "a comparative score must not be the flat sole-candidate delta, got $d",
+        )
     }
 
     @Test fun `a cross-script version is excluded before rarity is computed`() {
