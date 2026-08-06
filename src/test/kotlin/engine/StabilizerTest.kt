@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Covers the re-emission churn control (2026-06-25 study §3): a held passage whose reverse-lookup
+ * Covers the re-emission churn control (an earlier study §3): a held passage whose reverse-lookup
  * confidence oscillates as the window slides must NOT re-present the same verse over and over
  * (Иакова 2:19 fired 11× in the studied service). Emissions are bounded by [Config.reEmitMinDelta]
  * + [Config.reEmitCooldownMs], while a genuinely re-read passage (after the dedup TTL goes quiet)

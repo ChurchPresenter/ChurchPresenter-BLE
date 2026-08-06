@@ -16,15 +16,108 @@ class ReferenceWatcherTest {
         override var watchExpiresAt: Long = 0L
     }
 
+    /**
+     * A sticky pre-seeded to a live context.
+     *
+     * Writing the fields by hand at each call site is how a test ends up silently seeding only the
+     * book and then asserting about the chapter.
+     */
+    private fun sticky(book: Int? = null, chapter: Int? = null, expiresAt: Long = 0L) =
+        TestSticky().also { it.watchBook = book; it.watchChapter = chapter; it.watchExpiresAt = expiresAt }
+
     /** Feeds utterances in order through one sticky context; returns all refs emitted. */
-    private fun run(vararg utterances: String, now: Long = 1_000L): List<ReferenceWatcher.Ref> {
-        val sticky = TestSticky()
+    private fun run(vararg utterances: String, now: Long = 1_000L): List<ReferenceWatcher.Ref> =
+        feed(TestSticky(), *utterances, now = now)
+
+    /** Feeds utterances through an existing [s], returning everything emitted across them. */
+    private fun feed(s: TestSticky, vararg utterances: String, now: Long = 1_000L): List<ReferenceWatcher.Ref> {
         val all = mutableListOf<ReferenceWatcher.Ref>()
-        for (u in utterances) all += ReferenceWatcher.process(u, sticky, now)
+        for (u in utterances) all += ReferenceWatcher.process(u, s, now)
+        return all
+    }
+
+    /**
+     * Bilingual sibling of [run] — each turn is (transcript, translation), the pair the live
+     * pipeline hands to `process`. Without this every two-track test hand-rolls its own sticky.
+     */
+    private fun runBi(vararg turns: Pair<String, String>, now: Long = 1_000L): List<ReferenceWatcher.Ref> =
+        feedBi(TestSticky(), *turns, now = now)
+
+    private fun feedBi(
+        s: TestSticky,
+        vararg turns: Pair<String, String>,
+        now: Long = 1_000L,
+    ): List<ReferenceWatcher.Ref> {
+        val all = mutableListOf<ReferenceWatcher.Ref>()
+        for ((ru, en) in turns) all += ReferenceWatcher.process(ru, en, s, now)
         return all
     }
 
     private fun ReferenceWatcher.Ref.triple() = Triple(bookNum, chapter, verseStart)
+
+    // ── Synthetic test input ────────────────────────────────────────────────────
+    //
+    // Test inputs are the SHORTEST phrasing that still reaches the gate under test, never a verbatim
+    // sermon sentence: a one-off utterance pins behaviour to that utterance instead of to the
+    // pattern, and it will never recur. Each de-verbatimized test carries a `GATE:` tag naming the
+    // mechanism and a `TRACE:` tag with the session id — the recorded text lives in SESSIONS.md.
+    //
+    // Filler must stay free of digits, epistle markers and book aliases, or it would supply
+    // corroboration by accident and the negative tests would pass for the wrong reason. That
+    // invariant is asserted by `neutral filler never supplies corroboration` below, so building
+    // input with [bare]/[cited] enforces it structurally instead of by eyeball.
+
+    private val NEUTRAL_RU = listOf(
+        "сегодня", "хорошо", "конечно", "братья", "сестры", "давайте", "подумаем", "вместе",
+        "немного", "время", "место", "слово", "жизнь", "сердце", "истина", "путь", "человек",
+        "земля", "небо", "вода",
+    )
+
+    private val NEUTRAL_EN = listOf(
+        "today", "well", "surely", "together", "little", "time", "place", "word",
+        "life", "heart", "truth", "way", "person", "earth", "sky", "water",
+    )
+
+    /** [word] surrounded by neutral filler and nothing else — no digit, no marker, no keyword. */
+    private fun bare(word: String, before: Int = 1, after: Int = 1): String =
+        (NEUTRAL_RU.take(before) + word + NEUTRAL_RU.takeLast(after)).joinToString(" ") + "."
+
+    private fun bareEn(word: String, before: Int = 1, after: Int = 1): String =
+        (NEUTRAL_EN.take(before) + word + NEUTRAL_EN.takeLast(after)).joinToString(" ") + "."
+
+    /** [word] in a minimal explicit citation — the shortest form that corroborates a book name. */
+    private fun cited(word: String, chapter: Int = 3, verse: Int = 5): String =
+        "$word $chapter глава $verse стих."
+
+    private fun assertResolves(text: String, book: Int, chapter: Int, verse: Int, tier: Int? = null) {
+        val refs = run(text)
+        assertTrue(
+            refs.any { it.triple() == Triple(book, chapter, verse) },
+            "\"$text\" should resolve to $book $chapter:$verse, got $refs"
+        )
+        if (tier != null) {
+            assertEquals(tier, refs.first { it.triple() == Triple(book, chapter, verse) }.tier)
+        }
+    }
+
+    /** The dominant shape of every precision gate: the sticky must not move. */
+    private fun assertStickyHolds(book: Int, chapter: Int?, vararg utterances: String) {
+        val s = sticky(book, chapter)
+        val refs = feed(s, *utterances)
+        assertEquals(book, s.watchBook, "sticky book moved on ${utterances.toList()} (emitted $refs)")
+        assertEquals(chapter, s.watchChapter, "sticky chapter moved on ${utterances.toList()} (emitted $refs)")
+    }
+
+    @Test fun `neutral filler never supplies corroboration`() {
+        // Guards [bare]/[cited]: if a filler word ever gains a digit, a marker stem or a book alias,
+        // every negative test built on it would start passing for the wrong reason.
+        for (w in NEUTRAL_RU + NEUTRAL_EN) {
+            assertTrue(w.none { it.isDigit() }, "filler \"$w\" contains a digit")
+            assertNull(BookResolver.ALIASES[w], "filler \"$w\" is a book alias")
+            assertNull(BookResolver.resolveStem(w), "filler \"$w\" stems to a book")
+        }
+        assertTrue(run(bare("сегодня")).isEmpty(), "filler-only text must never emit")
+    }
 
     // ── Single-utterance explicit references (from real transcripts) ────────────
 
@@ -147,31 +240,38 @@ class ReferenceWatcherTest {
     }
 
     @Test fun `стихотворение look-alike does not emit`() {
-        assertNoEmit("где звучали стихотворения, где пелись пения.")
-        assertNoEmit("во славу Твоей молитвы Пение, стихотворение слово Твое.")
-        assertNoEmit("за все стихотворения, которые были сказаны.")
+        assertNoEmit("звучали стихотворения.")
+        assertNoEmit("молитвы, стихотворение, слово.")
+        assertNoEmit("за все стихотворения.")
     }
 
     @Test fun `главное look-alike does not emit`() {
-        assertNoEmit("Это самое главное в нашей жизни.")
+        assertNoEmit("это самое главное.")
     }
 
     @Test fun `глава семьи with no real number does not emit`() {
-        // "семьи" collides with the stem for 7 (семь); it must be rejected as a non-number.
-        assertNoEmit("глава семьи всегда готовым от сердца жертвовать собой.")
+        // GATE: NumberWords.NOT_NUMBERS — "семьи" (family) collides with the stem "семь" (7).
+        //
+        // Asserting only "nothing was emitted" does NOT guard this: with the entry removed, "глава
+        // семьи" reads as chapter 7, which has no verse and so emits nothing either — the test
+        // stayed green with NOT_NUMBERS emptied. The sticky is where the difference shows.
+        assertNoEmit("глава семьи жертвовать собой.")
         assertNoEmit("глава семьи")
+        val sticky = sticky(book = 45)
+        feed(sticky, "глава семьи жертвовать собой.")
+        assertNull(sticky.watchChapter, "\"семьи\" must not be read as the number 7")
     }
 
     @Test fun `bare plural стихи with no number does not emit`() {
-        assertNoEmit("читать стихи, рисовать красиво или еще чего-то.")
+        assertNoEmit("читать стихи, рисовать.")
     }
 
     @Test fun `bare один стих and этот стих do not emit`() {
-        assertNoEmit("И хочу прочитать один стих.")
-        assertNoEmit("этот стих для меня был чужой, непонятный.")
+        assertNoEmit("хочу прочитать один стих.")
+        assertNoEmit("этот стих был чужой.")
     }
 
-    // ── Epistle (ordinal) disambiguation — 1/2/3 John, 1/2 Peter (2026-06-25 study §2) ──────────
+    // ── Epistle (ordinal) disambiguation — 1/2/3 John, 1/2 Peter (an earlier study §2) ──────────
 
     @Test fun `Послание Иоанна resolves to the epistle not the gospel`() {
         // "1 Послание Иоанна, 4 глава, 3 стиха" → 1 John 4:3 (62), NOT John 4:3 (43).
@@ -233,7 +333,7 @@ class ReferenceWatcherTest {
     // ── Numbered-book (ordinal) disambiguation beyond John/Peter ────────────────
 
     @Test fun `Первая книга царств resolves to 1 Samuel, not left unresolved`() {
-        // The real trigger from the 2026-07-05 session log: spelled ordinal + "книга" + stem, with
+        // The real trigger from an earlier session log: spelled ordinal + "книга" + stem, with
         // no digit anywhere — the abbreviated "1-я царств" alias never fires here.
         val r = run("Первая книга царств, 15 глава, с 22 по 30 стих.").single()
         assertEquals(Triple(9, 15, 22), r.triple())
@@ -291,34 +391,31 @@ class ReferenceWatcherTest {
         assertEquals(null, sticky2.watchBook, "bare «Коринфянам» must stay unresolved, not default to 1 Corinthians")
     }
 
-    // ── Same-book re-mention must not clobber a just-set sticky chapter (2026-07-05 study) ────
+    // ── Same-book re-mention must not clobber a just-set sticky chapter (an earlier study) ────
 
     @Test fun `trailing book mention after its own chapter number does not wipe the chapter just set`() {
-        // Real trace (sticky-log 2026-07-05_172751.jsonl, ts 22:19:16.351Z): sticky already watching
-        // Revelation from earlier reading. RU's common "N глава [Книги-genitive]" word order names
-        // the chapter BEFORE the trailing book mention — the book atom's own end-of-segment flush
-        // (curBook=66, chapter=null) must not undo the chapter the same call's earlier flush set.
-        val sticky = TestSticky()
-        sticky.watchBook = 66
-        sticky.watchChapter = 20
-        val refs = ReferenceWatcher.process("Мы читаем об этом в 21 главе Откровения.", sticky, now = 1_000L)
+        // GATE: emit — a same-book re-mention carrying no chapter of its own must not undo the
+        //       chapter the same call just set (ReferenceWatcher.emit, `resolvedChapter`).
+        // TRACE: S07 — RU's "N главе <Книга-genitive>" word order names the chapter
+        //        BEFORE the book, so the book atom's end-of-segment flush nulled chapter 21.
+        val sticky = sticky(book = 66, chapter = 20)
+        val refs = feed(sticky, "в 21 главе Откровения.")
         assertTrue(refs.isEmpty(), "book+chapter with no verse must not emit, got $refs")
         assertEquals(66, sticky.watchBook)
         assertEquals(21, sticky.watchChapter, "trailing same-book re-mention must not wipe the chapter just set")
     }
 
     @Test fun `bilingual track's own book re-mention does not wipe a chapter set earlier in the same call`() {
-        // Reconstructed from sticky-log (ts 2026-07-05T22:58:48.089Z: prevChapter=12, newChapter=null)
-        // using the exact quoted RU/EN fragments: the RU portion sets book=1/chapter=12/verse=5; the
-        // EN translation names "Genesis" again later (forcing an internal flush that correctly emits
-        // 1:12:5), then continues with English's keyword-before-number order ("in chapter 12", "in
-        // verse 5") whose "in" fillers wipe the buffered numbers before the segment-end flush — which
-        // must not null out chapter 12.
+        // GATE: emit — as above, but reached through the EN track's keyword-before-number order,
+        //       whose "in" fillers wipe the buffered numbers before the segment-end flush.
+        // TRACE: S07 — prevChapter=12 → newChapter=null. Kept bilingual: the gate has
+        //        to hold on the transcript+translation concatenation, which no single-track test
+        //        exercises.
         val sticky = TestSticky()
-        val refs = ReferenceWatcher.process(
-            "И вот в книге Бытия, в 12 главе, в 5 стихе.",
-            "And here in the book of Genesis, in chapter 12, in verse 5, there's a passage.",
-            sticky, now = 1_000L,
+        val refs = feedBi(
+            sticky,
+            "в книге Бытия, в 12 главе, в 5 стихе." to
+                "in the book of Genesis, in chapter 12, in verse 5.",
         )
         assertTrue(refs.any { it.triple() == Triple(1, 12, 5) }, "expected Genesis 1 12:5 to have been emitted, got $refs")
         assertEquals(1, sticky.watchBook)
@@ -337,40 +434,21 @@ class ReferenceWatcherTest {
         assertEquals(null, sticky.watchChapter, "a genuinely new book must still drop the stale chapter")
     }
 
-    // ── Ambiguous common-word RU aliases need corroborating context (2026-07-05 study) ─────────
+    // ── Ambiguous common-word RU aliases need corroborating context (an earlier study) ─────────
 
     @Test fun `bare dative Иоанну narrating the apostle does not hijack the sticky book`() {
-        // Real trace (sticky-log ts 2026-07-05T22:19:12.320Z): 66→43 false flip while narrating the
-        // apostle by name ("...and to John, God reveals..."), not citing the Gospel.
-        val sticky = TestSticky()
-        sticky.watchBook = 66
-        sticky.watchChapter = 21
-        ReferenceWatcher.process("И вот Иоанну Бог открывает", sticky, now = 1_000L)
-        assertEquals(66, sticky.watchBook, "narrating the apostle by name must not hijack the sticky book to John")
-        assertEquals(21, sticky.watchChapter)
-    }
-
-    @Test fun `bare dative Иоанну in unrelated narration does not hijack the sticky book`() {
-        // Real trace (sticky-log ts 2026-07-05T22:20:14.280Z): 25→43 false flip, full real sentence.
-        val sticky = TestSticky()
-        sticky.watchBook = 25
-        sticky.watchChapter = 3
-        ReferenceWatcher.process(
-            "Смотрите, вот такой интересный эпизод был предоставлен Иоанну.", sticky, now = 1_000L,
-        )
-        assertEquals(25, sticky.watchBook)
-        assertEquals(3, sticky.watchChapter)
+        // GATE: classify/hasAmbiguousBookCorroboration — "иоанну" is the dative of the man's name;
+        //       only a nearby digit or citation marker makes it the Gospel (AMBIGUOUS_BOOK_FORMS).
+        // TRACE: S07 — two false flips, 66→43 and 25→43, narrating the apostle.
+        //        Both collapse to the same shape, so one bare-word case covers them.
+        assertStickyHolds(66, 21, bare("иоанну"))
+        assertStickyHolds(25, 3, bare("иоанну", before = 2, after = 2))
     }
 
     @Test fun `бытие as ordinary vocabulary does not hijack the sticky book`() {
-        // Real trace (sticky-log ts 2026-07-05T22:21:28.143Z): 43→1 false flip; "бытие" here means
-        // "being/existence" (a machine-translation tail), not a citation of Genesis.
-        val sticky = TestSticky()
-        sticky.watchBook = 43
-        sticky.watchChapter = 3
-        ReferenceWatcher.process("вот-вот вступаем в то бытие.", sticky, now = 1_000L)
-        assertEquals(43, sticky.watchBook, "ordinary vocabulary \"бытие\" must not hijack the sticky book to Genesis")
-        assertEquals(3, sticky.watchChapter)
+        // GATE: same — "бытие" means "being/existence" at least as often as it names Genesis.
+        // TRACE: S07 — 43→1 false flip off a machine-translation tail.
+        assertStickyHolds(43, 3, bare("бытие"))
     }
 
     @Test fun `digit-adjacent бытие still resolves as Genesis`() {
@@ -390,7 +468,7 @@ class ReferenceWatcherTest {
         assertEquals(1, sticky.watchBook, "«книга» marker should corroborate the abbreviation «Быт»")
     }
 
-    // ── Mechanism-level generalization (2026-07-05 study §3) — test the underlying rule across
+    // ── Mechanism-level generalization (an earlier study §3) — test the underlying rule across
     // many books/words instead of only the specific transcripts that first exposed it, so the next
     // word/book that falls into the same trap is caught before a live session hits it. ──────────
 
@@ -415,17 +493,19 @@ class ReferenceWatcherTest {
         }
     }
 
-    @Test fun `every recorded same-book chapter-clear from the 2026-07-05 service stays fixed`() {
-        // The four CHAPTER-CLEARED rows in sticky-log-2026-07-05_172751.jsonl, replayed as their real
-        // trigger text. That log is a frozen artifact of the pre-fix engine, so re-running the auditor
-        // over it can never show the fix working — these assertions are what actually prove it, and
-        // they cover shapes the invariant above does not: a book re-mentioned with no number at all
-        // ("...и вот в книге Бытие."), and one re-mentioned twice in one breath before its chapter.
+    @Test fun `every recorded same-book chapter-clear shape stays fixed`() {
+        // GATE: emit — the same reflush as the invariant above, in the three SHAPES that invariant
+        //       does not generate. Kept as a table for that reason, not because they are recorded.
+        // TRACE: S07 — its four CHAPTER-CLEARED rows collapse to three shapes; the
+        //        fourth repeated the first. That log is a frozen pre-fix artifact, so re-auditing it
+        //        can never show the fix working — these assertions are what prove it.
         val cases = listOf(
-            Triple(42, 9, "Если вы читаете Евангелие от Луки, откройте Евангелие от Луки на 9 главе. 9 глава, 51 стих."),
-            Triple(20, 3, "эту землю, для того, чтобы совершить спасение всего рода человеческого. И в притчах мы читаем 3-й лад."),
-            Triple(1, 12, "А пока это всего лишь Авраам, которому Бог повелел пойти в землю, которую Он укажет ему. И вот в книге Бытие."),
-            Triple(66, 21, "Да, мы читаем, мы верим в божественные истины, в Слове Божьем многое, что написано. Но, тем не менее, в Откровении."),
+            // book named twice in one breath, then its own chapter and verse
+            Triple(42, 9, "Евангелие от Луки, откройте Евангелие от Луки на 9 главе. 9 глава, 51 стих."),
+            // oblique-case re-mention carrying a bare ordinal and no chapter keyword
+            Triple(20, 3, "и в притчах мы читаем 3-й."),
+            // re-mention with no number at all
+            Triple(1, 12, "и вот в книге Бытие."),
         )
         for ((book, chapter, text) in cases) {
             val sticky = TestSticky()
@@ -442,12 +522,8 @@ class ReferenceWatcherTest {
         // "бытие" — any future word added to that table is automatically covered by this test with
         // no extra work. Fixed seed for reproducibility; fillers deliberately contain no digits, no
         // epistle markers, and no book names/aliases, so corroboration can never trigger by accident.
-        val fillers = listOf(
-            "сегодня", "хорошо", "конечно", "братья", "сестры", "давайте", "подумаем", "вместе",
-            "немного", "время", "место", "слово", "жизнь", "сердце", "истина", "путь", "человек",
-            "земля", "небо", "вода",
-        )
-        val rnd = Random(20260705)
+        val fillers = NEUTRAL_RU
+        val rnd = Random(9_140_705)
         for ((word, book) in ReferenceWatcher.AMBIGUOUS_BOOK_FORMS) {
             repeat(50) {
                 val before = List(rnd.nextInt(4)) { fillers[rnd.nextInt(fillers.size)] }
@@ -466,8 +542,8 @@ class ReferenceWatcherTest {
     @Test fun `ambiguous alias table resolves once corroborated by a nearby digit (fuzz)`() {
         // Proves the corroboration gate isn't just permanently closed — same table, same fillers,
         // this time with an adjacent chapter number.
-        val fillers = listOf("сегодня", "хорошо", "конечно", "братья", "сестры", "давайте")
-        val rnd = Random(20260705)
+        val fillers = NEUTRAL_RU.take(6)
+        val rnd = Random(9_140_705)
         for ((word, book) in ReferenceWatcher.AMBIGUOUS_BOOK_FORMS) {
             repeat(20) {
                 val before = List(rnd.nextInt(3)) { fillers[rnd.nextInt(fillers.size)] }
@@ -481,32 +557,21 @@ class ReferenceWatcherTest {
         }
     }
 
-    // ── Inflected ambiguous words (2026-07-12 session, AMBIGUOUS_BOOK_STEMS) ────
+    // ── Inflected ambiguous words (an earlier session, AMBIGUOUS_BOOK_STEMS) ────
 
     @Test fun `genitive бытия as ordinary vocabulary does not clear sticky chapter mid-passage (real session trace)`() {
-        // Real trace (sticky-log-2026-07-12_173830.jsonl line 19, ts 2026-07-12T22:58:39.822Z):
-        // reading through an English exposition of Psalm 14 with live Russian translation, "уровне
-        // своего бытия" (translation of "...level of his being") falsely resolved as Genesis (book
-        // 1), sandwiched between two genuine "Psalm 14"/"Псалма 14" mentions in the same combined
-        // transcript+translation call — nulling the sticky chapter mid-sermon.
-        val sticky = TestSticky()
-        sticky.watchBook = 19
-        sticky.watchChapter = 14
-        ReferenceWatcher.process(
-            "He may say, hallelujah, God is alive, yet in his heart, you know, at the deepest, " +
-                "most intimate level of his being, he may confess a different kind of faith, in " +
-                "inverted commas. his heart and with his life, he will repeat the words of the " +
-                "fool from Psalm 14. 14, it is unlikely that the words, there's no God, spoken by " +
-                "a man of God,",
-            "Он может сказать, аллелюя, Бог жив, но в своем сердце, вы знаете, на самом глубоком, " +
-                "самом интимном уровне своего бытия, он может исповедовать другой вид веры, в " +
-                "обернутых кометах. своим сердцем и своей жизнью, он повторит слова дурака из " +
-                "Псалма 14. 14, it is unlikely that the words, there's no God, spoken by a man of God,",
-            sticky, now = 1_000L,
-        )
-        assertEquals(19, sticky.watchBook)
-        assertEquals(14, sticky.watchChapter,
-            "genitive «бытия» must not falsely resolve to Genesis and clear the sticky chapter")
+        // GATE: AMBIGUOUS_BOOK_STEMS — "бытия" is the genitive of "бытие" (being/existence) and
+        //       reaches the stem path, which the exact-token gate does not cover.
+        // TRACE: S09 — the MT of "...level of his being" resolved as Genesis and
+        //        nulled the sticky chapter mid-Psalm-14.
+        //
+        // The ambiguous word must stay >2 tokens from any digit — inside that window the
+        // corroboration gate admits it and the test would pass for the wrong reason. [bare] has no
+        // digits at all. A trailing citation was tried and removed: "… Псалом 14." re-establishes
+        // chapter 14 on its own and masks the very clearing this guards, so the test stayed green
+        // with AMBIGUOUS_BOOK_STEMS emptied. Found by mutation, not by reading.
+        assertStickyHolds(19, 14, bare("бытия"))
+        assertStickyHolds(19, 14, bare("бытия", before = 2, after = 2))
     }
 
     @Test fun `digit-adjacent genitive бытия still resolves as Genesis`() {
@@ -514,17 +579,20 @@ class ReferenceWatcherTest {
         assertEquals(Triple(1, 1, 1), r.triple())
     }
 
-    // ── English short aliases on the translation track (2026-07-24) ────────────────
+    // ── English short aliases on the translation track (an earlier pass) ────────────────
     //
     // The ≤4-char gate is keyed on the exact token, so an English plural or possessive walks straight
     // past it — "song" is gated, "songs" is not. And a Bible *version* name carries a book name
     // inside it. Both shapes are from real translation-track traces across the archive.
 
     @Test fun `plural singing vocabulary does not become Song of Solomon (real session traces)`() {
+        // GATE: isShortAlias — a plural inherits the gate its singular has ("song" ≤4 chars).
+        // TRACE: S08, S09, S12 — three services, one
+        //        shape; the plural is the whole trigger, so one filler frame per form is enough.
         for (text in listOf(
-            "then we'll have a party. Two songs.",                      // 2026-07-12_092012 14:31:00Z
-            "We can sing the songs you've been singing.",               // 2026-07-12_173830 22:41:44Z
-            "hymns, songs, the Word of God being preached.",            // 2026-07-19_183945 22:45:56Z
+            "two songs.",
+            bareEn("songs"),
+            bareEn("songs", before = 2, after = 2),
         )) {
             val sticky = TestSticky()
             ReferenceWatcher.process(text, sticky, now = 1_000L)
@@ -533,36 +601,38 @@ class ReferenceWatcherTest {
     }
 
     @Test fun `a possessive of a short alias is gated like the singular`() {
-        // 2026-07-12_092012 14:20:57Z — "Job's first trial did not involve him physically."
+        // GATE: isShortAlias — a possessive inherits the gate its singular has ("job" ≤4 chars).
+        // TRACE: S08 — "Job's first trial…" primed Job off ordinary narration.
         val sticky = TestSticky()
-        ReferenceWatcher.process("Notice that Job's first trial did not involve him physically.", sticky, now = 1_000L)
+        feed(sticky, bareEn("job's"))
         assertNull(sticky.watchBook)
     }
 
     @Test fun `a bible version name is not a citation (real session trace)`() {
-        // 2026-07-12_173830 22:54:59Z — reading Psalm 14, the translator says which version is being
-        // used and the sticky book flipped to James for the rest of the passage.
+        // GATE: isVersionNamePart — a book name inside a VERSION name names the module being read
+        //       from, not a citation.
+        // TRACE: S09 — mid-Psalm-14 the sticky book flipped to James for the rest of
+        //        the passage. The real citation must still win in the same utterance, so the Psalm
+        //        stays in the input.
         val sticky = TestSticky()
-        ReferenceWatcher.process(
-            "But let us read the first verses of Psalm 14, and I'm going to use New King James version.",
-            sticky, now = 1_000L,
-        )
+        feed(sticky, "Psalm 14, New King James version.")
         assertEquals(19, sticky.watchBook, "the citation is Psalm 14; \"King James\" names a version")
         // (The chapter does not survive here: prose after a bare number drops it by design — see the
         // colon-only exception in interpret's Filler branch. The book is what mattered for this bug.)
     }
 
     @Test fun `genuine English citations still resolve`() {
-        // The guard for all three gates above — these are the shapes that must keep working.
-        assertEquals(42, run("recorded in the Gospel of Luke, chapter 21, verse 28.").single().bookNum)
+        // The recall guard for the three gates above — the marker words ("Gospel of", "book of")
+        // are load-bearing here, unlike in the negatives, so they stay.
+        assertEquals(42, run("the Gospel of Luke, chapter 21, verse 28.").single().bookNum)
         assertEquals(Triple(42, 11, 24), run("Luke, chapter 11, verses 24 through 26.").single().triple())
         val psalms = TestSticky()
-        ReferenceWatcher.process("this phrase is also found twice in the book of Psalms.", psalms, now = 1_000L)
+        feed(psalms, "in the book of Psalms.")
         assertEquals(19, psalms.watchBook, "an explicit \"book of Psalms\" marker is a real citation")
         assertEquals(Triple(59, 1, 5), run("James, chapter 1, verse 5.").single().triple())
     }
 
-    // ── SPB-registered short aliases that are their own stem (2026-07-19 / 2026-07-24) ─────
+    // ── SPB-registered short aliases that are their own stem (an earlier pass) ─────
     //
     // BookResolver.register() folds every loaded SPB module's book names into the alias table at
     // startup, so what the engine resolves live is wider than the static table these tests otherwise
@@ -580,62 +650,53 @@ class ReferenceWatcherTest {
     }
 
     @Test fun `Иуда naming the betrayer does not hijack the sticky book (real session trace)`() {
-        // Real trace (sticky-log-2026-07-19_183945.jsonl, ts 2026-07-19T22:47:04.194Z): a sermon
-        // illustration about Judas Iscariot ("Не больно ему было, когда Иуда...") flipped the sticky
-        // book from Song of Solomon to Jude, with nothing emitted and no citation anywhere in either
-        // track. The exact-alias branch correctly refused bare "иуда"; the stem fallback then matched
-        // the same token at extension 0 and admitted it with no corroboration at all.
+        // GATE: classify — an SPB-registered ≤4-char name reaches only the stem fallback, which the
+        //       exact branch's short-alias refusal must not re-admit (`unvettedShortName`).
+        // TRACE: S12 — a sermon illustration about Judas Iscariot flipped the sticky
+        //        from Song of Solomon to Jude, nothing emitted, no citation in either track.
+        //        Kept bilingual: the gate has to hold on the concatenated tracks — and that is what
+        //        caught the EN half. "judas" is the GERMAN alias for Jude, 5 chars, so it cleared
+        //        the short-alias gate and primed Jude off the English word for the betrayer. The
+        //        original recorded MT garbled that word, so no test had ever exercised it.
         withRegisteredBookNames(65 to "Иуда") {
-            val sticky = TestSticky()
-            sticky.watchBook = 22
-            sticky.watchChapter = 2
-            ReferenceWatcher.process(
-                "Мы говорим, друзья нас не поняли, не поддержали в трудную минуту И более того, " +
-                    "позорно нас предали, отбросив благочестие, атрибуты. а как Христу. Не больно " +
-                    "ему было, когда Иуда...",
-                "It's called Look At Christ. Sometimes, when we're being persecuted or arrested, " +
-                    "we say, oh, fate is mine, but what if we had a Golgotha cross and a bowl of " +
-                    "bitter-burning pussy? Мы говорим, друзья нас не поняли, не поддержали в " +
-                    "трудную минуту И более того, позорно нас предали, отбросив благочестие, " +
-                    "атрибуты.",
-                sticky, now = 1_000L,
-            )
+            val sticky = sticky(book = 22, chapter = 2)
+            feedBi(sticky, bare("иуда") to bareEn("judas"))
             assertEquals(22, sticky.watchBook, "narrating Judas must not make Jude the sticky book")
             assertEquals(2, sticky.watchChapter)
         }
     }
 
     @Test fun `осия as ordinary vocabulary does not hijack the sticky book (real session trace)`() {
-        // The same mechanism, found first: sticky-log-2026-07-12_173830 flipped to Hosea and held it
+        // The same mechanism, found first: sticky-log-S09 flipped to Hosea and held it
         // as the wrong sticky book for ~40 minutes, taking a cluster of Psalm 14 references down with
         // it (TRAINING_PLAN's "short-alias corroboration too loose" gap).
         withRegisteredBookNames(28 to "Осия") {
-            val sticky = TestSticky()
-            sticky.watchBook = 19
-            sticky.watchChapter = 14
-            ReferenceWatcher.process("Вот в этом и была его осия, его упрямство.", sticky, now = 1_000L)
+            val sticky = sticky(book = 19, chapter = 14)
+            feed(sticky, bare("осия"))
             assertEquals(19, sticky.watchBook)
             assertEquals(14, sticky.watchChapter)
         }
     }
 
     @Test fun `a from-the-first-verse opener is a verse, not a chapter (real session trace)`() {
-        // Real trace (2026-07-22_183657, segment 635's accumulated translation): the operator's
-        // Russian "С первого стиха" is machine-translated to "From the first verse", which carries no
-        // chapter number at all. The 2026-07-12 "Book N, verse M" branch fired anyway — a book had
-        // been named earlier in the same accumulated text — and took the VERSE ordinal as the chapter,
-        // priming the sticky to Psalm 1 while the congregation was in Psalm 23. It then emitted
-        // 19:1:1 as a tier-2 continuation, which auto-goes-live.
+        // GATE: interpret `fromMark` — a "с"/"from" ordinal opens a VERSE span, so it must not be
+        //       taken as the chapter when the book was named earlier in the same accumulated text.
+        // TRACE: S13 seg 635 — the MT "From the first verse" carries no chapter at
+        //        all; the branch took the verse ordinal as chapter and emitted 19:1:1 tier-2
+        //        (auto-go-live) mid-Psalm-23.
+        //
+        // The EN track's number-BEFORE-book order ("The 23rd Psalm") is load-bearing and was found
+        // by mutation, not by reading: with the plainer "Psalm 23." the gate is never reached and
+        // this test passes with `fromMark` deleted. Two short sentences per track is the minimum
+        // that still reproduces — the book must be named earlier in the SAME accumulated text.
         val sticky = TestSticky()
-        val refs = ReferenceWatcher.process(
-            "Это будет 23-й Псалом. Псалом 23. С первого стиха. Псалом Давида. " +
-                "Господня земля и что наполняет ее.",
-            "It will be Psalm 23. The 23rd Psalm. From the first verse. A song of David. " +
-                "To Jehovah belongs the earth and all that is in it.",
-            sticky, now = 1_000L,
+        val refs = feedBi(
+            sticky,
+            "Псалом 23. С первого стиха." to "The 23rd Psalm. From the first verse.",
         )
         assertEquals(23, sticky.watchChapter, "\"from the first verse\" names a verse, not chapter 1")
-        assertTrue(refs.none { it.chapter == 1 }, "nothing in Psalm 1 was cited: $refs")
+        assertTrue(refs.any { it.triple() == Triple(19, 23, 1) }, "expected Psalm 23:1, got $refs")
+        assertTrue(refs.none { it.chapter == 1 }, "nothing in Psalm 1 may be cited: $refs")
     }
 
     @Test fun `с первого стиха after a chapter announcement still reads as verse 1`() {
@@ -644,7 +705,7 @@ class ReferenceWatcherTest {
     }
 
     @Test fun `an epistle named before its ordinal resolves to the epistle, not the gospel`() {
-        // Real trace (2026-07-22_183657.db row 928): "Иоанн говорит в первом послании, в первой главе
+        // Real trace (S13.db row 928): "Иоанн говорит в первом послании, в первой главе
         // шестом стихе" — the book is named FIRST and the ordinal+marker follow it. resolveNumberedBookAt
         // only looks backwards ("первое послание Иоанна"), so this resolved to the Gospel and shipped as
         // an explicit tier-1, i.e. straight to the screen. The reverse lookup found the real verse
@@ -663,10 +724,10 @@ class ReferenceWatcherTest {
         assertEquals(Triple(43, 1, 6), run("Иоанна, 1 глава, 6 стих.").single().triple())
     }
 
-    // ── Verse-range announcement against a live sticky (2026-07-22 session) ────────
+    // ── Verse-range announcement against a live sticky (an earlier session) ────────
 
     @Test fun `a bare verse range binds to the sticky chapter, not as a chapter itself (real session trace)`() {
-        // Real trace (2026-07-22_183657.db, seg 797, ts_ms=1784761797829): re-reading Psalm 24 twenty
+        // Real trace (S13.db, seg 797, ts_ms=1784761797829): re-reading Psalm 24 twenty
         // minutes after the first pass, the speaker announced the span without restating the chapter:
         // "стихи 3-го стиха по 6-й" = verses 3 through 6. The leading "3" was bound as a CHAPTER,
         // emitting 19:3:3 / 19:3:6 against a sticky that already knew chapter 24 — so the operator's
@@ -676,7 +737,7 @@ class ReferenceWatcherTest {
         sticky.watchBook = 19
         sticky.watchChapter = 24
         val refs = ReferenceWatcher.process(
-            "Я бы хотел обратить внимание на стихи 3-го стиха по 6-й.", sticky, now = 1_000L,
+            "стихи 3-го стиха по 6-й.", sticky, now = 1_000L,
         )
         assertEquals(24, sticky.watchChapter, "the announcement names verses, so the chapter must survive")
         assertTrue(
@@ -716,8 +777,8 @@ class ReferenceWatcherTest {
         assertEquals(Triple(19, 23, 1), run("Псалом 23, 1 стих.").single().triple())
         assertEquals(Triple(43, 3, 16), run("Иоанна 3, 16 стих.").single().triple())
         // The English order (number after the keyword) must keep working — it binds via the pending
-        // keyword instead, and is the case the 2026-07-12 fix was written for.
-        assertEquals(Triple(19, 10, 13), run("The illusion is reflected in Psalm 10, verse 13.").single().triple())
+        // keyword instead, and is the case the earlier fix was written for.
+        assertEquals(Triple(19, 10, 13), run("Psalm 10, verse 13.").single().triple())
     }
 
     @Test fun `a bare book and number still reads as a chapter`() {
@@ -731,8 +792,8 @@ class ReferenceWatcherTest {
     }
 
     @Test fun `открой in ordinary prose does not hijack the sticky book (real session trace)`() {
-        // Real trace (sticky-log-2026-07-19_183945.jsonl, ts 2026-07-19T23:26:00.048Z): a passage
-        // about opening a door flipped the sticky from Luke 11 to Revelation. The 2026-07-09
+        // Real trace (sticky-log-S12.jsonl, ts a recorded moment): a passage
+        // about opening a door flipped the sticky from Luke 11 to Revelation. The an earlier pass
         // over-extension gate does not reach it — "откр" (the Revelation abbreviation alias) is only
         // 4 chars, and Russian verb forms sit 1-2 chars past it: "открой" is +2, under the >=3
         // threshold, so it resolved unconditionally. ("открываем"/"открывает", which stickyAudit
@@ -807,13 +868,13 @@ class ReferenceWatcherTest {
         }
     }
 
-    // ── Bare chapter number before a verse keyword (2026-07-12 session) ────────
+    // ── Bare chapter number before a verse keyword (an earlier session) ────────
 
     @Test fun `Psalm 10 verse 13 resolves chapter 10 verse 13, not transposed (real session trace)`() {
-        // Real trace: DB row ts_ms=1783897645684 (session 2026-07-12_173830), the corrected/final
+        // Real trace: DB row ts_ms=1783897645684 (session S09), the corrected/final
         // STT text. No chapter keyword for "10" — it must still bind as chapter by the universal
         // bare "book N" convention, not get swept into verseStart by the trailing "verse" keyword.
-        val r = run("The illusion is reflected in Psalm 10, verse 13.").single()
+        val r = run("Psalm 10, verse 13.").single()
         assertEquals(Triple(19, 10, 13), r.triple())
     }
 
@@ -821,7 +882,7 @@ class ReferenceWatcherTest {
         // Real trace: DB row ts_ms=1783897642945, a transient partial where STT misheard "13" as
         // "30" one second before self-correcting. The engine previously parsed this as chapter=30,
         // verse=10 (transposed) — an "explicit" match, which auto-goes-live with no staging net.
-        val r = run("The illusion is reflected in Psalm 10, verse 30.").single()
+        val r = run("Psalm 10, verse 30.").single()
         assertEquals(Triple(19, 10, 30), r.triple())
     }
 
@@ -844,22 +905,25 @@ class ReferenceWatcherTest {
     // trigger text here as future sessions surface it (in addition to, not instead of, a dedicated
     // named test for any actual fix) — this list is meant to keep growing every session instead of
     // coverage living only in one-off named tests. See TRAINING_PLAN.md Test Strategy.
+    // Each line carries ONE trigger word in the inflection that actually misfired, in a neutral
+    // frame — the frames are deliberately different from the dedicated named tests above, so a
+    // corpus entry is an independent sample rather than a second run of the same assertion.
     private val NEGATIVE_CORPUS = listOf(
-        "вот-вот вступаем в то бытие.",
-        "Смотрите, вот такой интересный эпизод был предоставлен Иоанну.",
-        "Затем вся молодежь выйдет и споет «Когда Христос меня простил».",
-        "Как можно курить в переполненном автобусе, где много детей?",
-        "Мы поем ее часто в нашей Второй Одесской Церкви.",
-        // Documented Known Engine Gaps (TRAINING_PLAN): stem over-extension + short real-word
-        // aliases in prose — closed by classify's over-extension/short-alias gates.
-        "он удостоил его тому, что открылся народу.",
-        "нужно повторить этот отрывок еще раз.",
-        "we will sing a song together this morning.",
-        "he did a good job on the presentation.",
-        "при этом мы видим важную деталь.",
-        // 2026-07-12 session: genitive "бытия" as ordinary vocabulary ("...level of his being"),
-        // closed by AMBIGUOUS_BOOK_STEMS.
-        "на самом глубоком, самом интимном уровне своего бытия, он может исповедовать другой вид веры.",
+        "вступаем в то бытие.",                    // AMBIGUOUS_BOOK_FORMS: быти* = being/existence
+        "эпизод был предоставлен Иоанну.",          // AMBIGUOUS_BOOK_FORMS: dative of the man's name
+        "молодежь споет о Христе.",                 // no alias at all — plain prose must stay silent
+        "как можно курить в автобусе?",             // ditto, unrelated vocabulary
+        "поем ее в нашей Второй Церкви.",           // "Второй" is an ordinal, not a numbered book
+        // Stem over-extension + short real-word aliases in prose (TRAINING_PLAN Known Gaps),
+        // closed by classify's over-extension / short-alias gates.
+        "он открылся народу.",                      // откр + 3 chars
+        "нужно повторить отрывок.",                 // a Deuteronomy stem over-extended
+        "we will sing a song this morning.",         // EN short alias
+        "he did a good job today.",                  // EN short alias
+        "при этом мы видим деталь.",                 // RU short alias
+        "на уровне своего бытия.",                   // AMBIGUOUS_BOOK_STEMS: genitive of бытие
+        "когда Иуда предал его.",                    // registered short name, narrated as a person
+        "when Judas betrayed him.",                  // the EN half of the same — "judas" is a German alias
     )
 
     @Test fun `growing negative corpus never emits or hijacks an unset sticky book`() {
@@ -967,7 +1031,7 @@ class ReferenceWatcherTest {
 
     @Test fun `normalizeStt gates э to е book resolution`() {
         // Book + chapter only (no verse) never emits a Ref, so check the sticky it primes instead.
-        val line = "Послание к эфесянам, 6 глава, начинается следующими словами."
+        val line = "Послание к эфесянам, 6 глава."
         fun stickyBookChapter(): Pair<Int?, Int?> {
             val sticky = TestSticky()
             ReferenceWatcher.process(line, sticky, now = 1_000L)
@@ -1002,10 +1066,10 @@ class ReferenceWatcherTest {
     @Test fun `gated recall does not regress precision negatives at any level`() {
         val negatives = listOf(
             "где звучали стихотворения.",
-            "Это самое главное в нашей жизни.",
+            "это самое главное.",
             "глава семьи",
             "читать стихи.",
-            "И хочу прочитать один стих.",
+            "хочу прочитать один стих.",
         )
         try {
             for (level in listOf("conservative", "balanced", "aggressive")) {
@@ -1022,7 +1086,7 @@ class ReferenceWatcherTest {
     }
 
 
-    // ── FP gates: stem over-extension + short aliases (Known Engine Gaps, closed 2026-07) ──────
+    // ── FP gates: stem over-extension + short aliases (Known Engine Gaps, closed an earlier pass) ──────
 
     @Test fun `short alias with adjacent number still resolves`() {
         // Gate B must not cost recall when the citation carries its number nearby.
@@ -1048,7 +1112,7 @@ class ReferenceWatcherTest {
     @Test fun `over-extended stems in prose never hijack the sticky`() {
         // "открылся"/"повторить" share prefixes with book stems; bare in prose they must
         // neither emit nor move the sticky book (the sticky-pollution path behind many
-        // chapter-history FPs in the recorded 2026-07-08 session).
+        // chapter-history FPs in the recorded an earlier session).
         val sticky = TestSticky()
         ReferenceWatcher.process("Послание к римлянам, 6 глава, 4 стих.", sticky, 1_000L)
         val bookBefore = sticky.watchBook
@@ -1067,24 +1131,24 @@ class ReferenceWatcherTest {
             val refs = run("we were talking about $alias yesterday evening.")
             assertTrue(refs.isEmpty(), "bare short alias '$alias' emitted $refs")
         }
-        for (alias in shortAliases.shuffled(kotlin.random.Random(20260709)).take(10)) {
+        for (alias in shortAliases.shuffled(kotlin.random.Random(9_140_709)).take(10)) {
             val refs = run("$alias 3 глава 2 стих.")
             assertTrue(refs.isNotEmpty(), "corroborated short alias '$alias' should resolve")
         }
     }
 
-    // ── Colon-bound citations survive trailing prose (found via DB row 843, 2026-07-09) ────────
+    // ── Colon-bound citations survive trailing prose (found via DB row 843, an earlier pass) ────────
 
     @Test fun `colon citation followed by prose keeps its verse`() {
         // Real transcript row 843: explicit dot-form citation + the quoted verse text. The prose
         // word after the citation used to wipe the buffered verse (name+count guard over-reach),
         // downgrading an explicit tier-1 detection to a weak staged chapter-scan.
-        val ru = run("Исайя 26.3 написано «Твердого духом ты хранишь в совершенном мире».")
+        val ru = run("Исайя 26.3 написано так.")
         assertTrue(
             ru.any { it.bookNum == 23 && it.chapter == 26 && it.verseStart == 3 && it.tier == 1 },
             "Исайя 26.3 + prose should stay an explicit tier-1 ref, got $ru"
         )
-        val en = run("Isaiah 26:3 says, you will keep him in perfect peace.")
+        val en = run("Isaiah 26:3 says so.")
         assertTrue(
             en.any { it.bookNum == 23 && it.chapter == 26 && it.verseStart == 3 && it.tier == 1 },
             "Isaiah 26:3 + prose should stay an explicit tier-1 ref, got $en"
@@ -1102,14 +1166,14 @@ class ReferenceWatcherTest {
     @Test fun `keyword-bound numbers still drop before prose - not verses`() {
         // colonSeen is deliberately the ONLY filler-survival trigger: a chapter keyword followed
         // by an unrelated count must not fabricate a verse.
-        val refs = run("Матфея 3 глава, мы видим 5 причин почему.")
+        val refs = run("Матфея 3 глава, 5 причин.")
         assertTrue(
             refs.none { it.verseStart == 5 },
             "count after keyword-bound chapter must not become verse 5, got $refs"
         )
     }
 
-    // ── Punctuation robustness: apostrophe aliases + ё folding (2026-07-09 audit) ──────────────
+    // ── Punctuation robustness: apostrophe aliases + ё folding (an earlier audit) ──────────────
 
     @Test fun `ukrainian apostrophe alias resolves in both spellings`() {
         // "об'явлення" tokenizes to two tokens (apostrophe → space); the registered
@@ -1135,7 +1199,7 @@ class ReferenceWatcherTest {
         )
     }
 
-    // ── Keyword-first citations (2026-07-09: keywords now bind the FOLLOWING number too) ────────
+    // ── Keyword-first citations (an earlier pass) ────────
 
     @Test fun `keyword-first russian citation parses in order`() {
         // Was inverted before the pending-keyword fix: chapter=3, verse=26.
@@ -1165,7 +1229,223 @@ class ReferenceWatcherTest {
 
     @Test fun `pending keyword does not bind across prose`() {
         // A keyword followed by filler then an unrelated number must not fabricate a chapter.
-        val refs = run("В этой главе, друзья мои, 26 человек упомянуты.")
+        val refs = run("В этой главе, друзья, 26 человек.")
         assertTrue(refs.isEmpty(), "keyword across prose must not bind, got $refs")
+    }
+
+    // ── Multi-word book names and the author-name trap (an earlier pass) ────────────
+
+    @Test fun `Плач Иеремии resolves even when both words are misinflected`() {
+        // GATE: classify — BookResolver.resolveStemPhrase joins a multi-word name by per-word
+        //       stem, so both halves may be inflected differently than the table spells them.
+        // TRACE: S15 row 1 — the STT wrote nominative "Иеремия" where the alias
+        //        "плач иеремии" needs the genitive, so the two words classified independently
+        //        (Lamentations THEN Jeremiah) and interpret() kept the last book before the
+        //        numbers. The whole sermon then ran against Jeremiah 3.
+        //
+        // The recorded text opened "прочитать сегодня книгу пророка …". That marker was dropped
+        // after checking by mutation that this shorter form still fails with the stem-phrase join
+        // removed — the join consumes both tokens before the corroboration gate is ever consulted,
+        // so the marker was never load-bearing here.
+        val refs = run("Плача Иеремия, 3 глава, 24 стих.")
+        assertTrue(
+            refs.any { it.triple() == Triple(25, 3, 24) },
+            "Плача Иеремия 3:24 must resolve to Lamentations, got $refs"
+        )
+        assertTrue(refs.none { it.bookNum == 24 }, "must not also emit Jeremiah, got $refs")
+    }
+
+    @Test fun `author named in prose does not hijack the sticky book`() {
+        // GATE: AMBIGUOUS_BOOK_FORMS (nominative "иеремия") + hasAmbiguousBookCorroboration's
+        //       FROM_WORDS clause — a "с"-introduced number opens a verse span and must not
+        //       corroborate a book named after it.
+        // TRACE: S15 — preaching FROM Lamentations, each bare mention of the prophet
+        //        re-pointed the sticky at Jeremiah. A bare name emits nothing by itself, so the
+        //        damage only surfaced on the NEXT utterance carrying a number: "с 22 стиха" became
+        //        Jeremiah 22:22, tier-1 auto-go-live.
+        //
+        // Three utterances is the minimum — seed, bare mention, then the FROM-bound verse — and the
+        // sticky must be asserted, not just the emissions. The recorded 4th utterance repeated the
+        // shape of the 2nd.
+        val sticky = TestSticky()
+        val refs = feed(
+            sticky,
+            "Плача Иеремия, 3 глава, 24 стих.",
+            "Иеремия говорит о надежде.",
+            "прочитаем с 22 стиха, Иеремия описывает.",
+        )
+
+        assertEquals(25, sticky.watchBook, "sticky must stay on Lamentations, got $refs")
+        assertTrue(refs.none { it.bookNum == 24 }, "must never emit Jeremiah, got $refs")
+        assertTrue(
+            refs.any { it.bookNum == 25 && it.chapter == 3 && it.verseStart == 22 },
+            "с 22 стиха must read as Lamentations 3:22, got $refs"
+        )
+    }
+
+    @Test fun `explicit Jeremiah citation still resolves`() {
+        // The gate above must not cost the real citation: an earlier pass detected Jeremiah 33:3
+        // correctly and the operator accepted it.
+        val refs = run("Иеремия 33 глава 3 стих.")
+        assertTrue(
+            refs.any { it.triple() == Triple(24, 33, 3) },
+            "explicit Jeremiah 33:3 must still resolve, got $refs"
+        )
+    }
+
+    // ── Mechanism-level: multi-word aliases resolve under any case inflection ──────────────────
+
+    @Test fun `every multi-word russian alias resolves through the stem-phrase index`() {
+        // Invariant over the table itself, so a multi-word name added later is covered with no
+        // extra test: whatever ALIASES spells, resolveStemPhrase must accept its own spelling.
+        val multiWord = BookResolver.ALIASES.entries
+            .filter { it.key.contains(' ') && it.key.any { c -> c in 'а'..'я' } }
+        assertTrue(multiWord.isNotEmpty(), "expected multi-word Russian aliases in the table")
+        for ((alias, book) in multiWord) {
+            val resolved = BookResolver.resolveStemPhrase(alias.split(' '))
+            // A stemmed phrase shared by two books is dropped as ambiguous by design; only assert
+            // that when it DOES resolve it resolves to the right book.
+            if (resolved != null) {
+                assertEquals(book, resolved, "multi-word alias \"$alias\" resolved to $resolved")
+            }
+        }
+    }
+
+    @Test fun `multi-word aliases survive random russian case endings`() {
+        // Fuzz over the same table: re-inflect each word with an arbitrary Russian ending and the
+        // phrase must still name the same book — that is what "Плача Иеремия" needed and what the
+        // exact-only join could not do. Seeded, so a failure reproduces.
+        val endings = listOf("", "а", "и", "ю", "е", "ы", "я")
+        val rnd = Random(9_140_805)
+        val multiWord = BookResolver.ALIASES.entries
+            .filter { it.key.contains(' ') && it.key.any { c -> c in 'а'..'я' } }
+        for ((alias, book) in multiWord) {
+            if (BookResolver.resolveStemPhrase(alias.split(' ')) == null) continue
+            repeat(8) {
+                // Only re-inflect all-Cyrillic words longer than the stemmer's 4-char floor.
+                // An ordinal like "1-я" in "1-я царств" is notation, not a declinable word, and a
+                // short preposition like the "от" of "от матфея" is below the floor — stemOf
+                // cannot trim it, so appending an ending changes the stem itself rather than the
+                // inflection. Neither is a form a speaker produces; the declinable half of every
+                // such alias is still fuzzed.
+                val mangled = alias.split(' ').map { w ->
+                    if (w.length > 4 && w.all { c -> c in 'а'..'я' }) {
+                        BookResolver.stemOf(w) + endings.random(rnd)
+                    } else {
+                        w
+                    }
+                }
+                assertEquals(
+                    book, BookResolver.resolveStemPhrase(mangled),
+                    "re-inflected \"${mangled.joinToString(" ")}\" must still name book $book"
+                )
+            }
+        }
+    }
+
+    @Test fun `stem-phrase matching never fires on a single token`() {
+        // The join must not widen what one bare word resolves to — that is the exact-alias
+        // branch's job, with its own short-alias and ambiguity gates.
+        assertNull(BookResolver.resolveStemPhrase(listOf("плач")))
+        assertNull(BookResolver.resolveStemPhrase(listOf("иеремия")))
+    }
+
+    // ── Alias gaps found by cross-checking an externally-written regex list ───────────────────
+
+    @Test fun `Ezekiel resolves in the correct Synodal spelling`() {
+        // The table carried only the one-и typo "иезекиль", so the correct "Иезекииль" — and every
+        // inflection of it — resolved to nothing at all. Both spellings must work: the STT produces
+        // either.
+        for (form in listOf("Иезекииль", "Иезекииля", "Иезекиль")) {
+            val refs = run("$form 3 глава 5 стих.")
+            assertTrue(
+                refs.any { it.triple() == Triple(26, 3, 5) },
+                "$form 3:5 must resolve to Ezekiel, got $refs"
+            )
+        }
+    }
+
+    @Test fun `genitive Второзакония is a book, not the number two`() {
+        // NumberWords matches stem "втор" (2) plus any plausible ending, and "озакония" starts with
+        // a vowel — so the standard Russian title of Deuteronomy parsed as the numeral 2 and never
+        // reached BookResolver. Only inflected forms were hit: "Второзаконие" is an exact alias and
+        // matched before the number check.
+        for (form in listOf("Второзаконие", "Второзакония", "Второзаконию")) {
+            val refs = run("книга $form 3 глава 5 стих.")
+            assertTrue(
+                refs.any { it.triple() == Triple(5, 3, 5) },
+                "$form 3:5 must resolve to Deuteronomy, got $refs"
+            )
+        }
+    }
+
+    @Test fun `ordinal number words are still numbers`() {
+        // The longest-match rule must not turn a real numeral into a book: "второй" matches the
+        // number stem "втор" and the book stem "втор" at equal length, so the number wins.
+        val refs = run("Матфея вторая глава пятый стих.")
+        assertTrue(
+            refs.any { it.triple() == Triple(40, 2, 5) },
+            "spelled ordinals must still parse as chapter 2 verse 5, got $refs"
+        )
+    }
+
+    @Test fun `mechanism - no Cyrillic book alias is swallowed by the number lexicon`() {
+        // Invariant over the alias table itself, so the next book name that happens to start with a
+        // number stem is caught here rather than in a service. A name the engine knows must never
+        // be read as a numeral.
+        val cyrillic = BookResolver.ALIASES.keys.filter { k -> k.all { it in 'а'..'я' || it == ' ' } }
+        assertTrue(cyrillic.size > 50, "expected a substantial Cyrillic alias set, got ${cyrillic.size}")
+        // ≤2-char aliases ("пс", "мк") are skipped by classify on purpose — typed-input
+        // abbreviations that would fire constantly on spoken prose.
+        for (alias in cyrillic.filter { !it.contains(' ') && it.length >= 3 }) {
+            val refs = run("$alias 3 глава 5 стих.")
+            assertTrue(
+                refs.any { it.chapter == 3 && it.verseStart == 5 },
+                "alias \"$alias\" resolved to no book in an explicit citation"
+            )
+        }
+    }
+
+    @Test fun `canonical genitive book titles resolve but stay gated in prose`() {
+        // "Книга Иова"/"Книга Руфи"/"Книга Ионы" are how these books are actually named in Russian,
+        // and none of them resolved. Each is <=4 chars, so it inherits the short-alias
+        // corroboration gate — cited, yes; bare prose, no.
+        val expected = mapOf("иова" to 18, "руфи" to 8, "ионы" to 32, "тита" to 56)
+        for ((form, book) in expected) {
+            val cited = run("книга $form 3 глава 5 стих.")
+            assertTrue(
+                cited.any { it.triple() == Triple(book, 3, 5) },
+                "книга $form 3:5 must resolve to book $book, got $cited"
+            )
+            val sticky = TestSticky()
+            ReferenceWatcher.process("и тогда $form сказал это своему другу", sticky, 1_000L)
+            assertNull(sticky.watchBook, "bare \"$form\" in prose must not claim the sticky book")
+        }
+    }
+
+    @Test fun `mechanism - a FROM-bound number never corroborates a book named after it`() {
+        // GATE: hasAmbiguousBookCorroboration's FROM_WORDS clause. Before this test the clause was
+        //       guarded by exactly ONE case (the Lamentations trace), which the mutation baseline
+        //       exposed. Iterating the two tables instead means the next word added to either is
+        //       covered with no extra test.
+        //
+        // "с N стиха <word>" opens a verse span in the book already being read, so <word> must not
+        // claim the sticky; "в N главе <word>" is an ordinary chapter citation and still must.
+        for ((word, book) in ReferenceWatcher.AMBIGUOUS_BOOK_FORMS) {
+            for (from in listOf("с", "со")) {
+                val gated = sticky(book = 45, chapter = 3)
+                feed(gated, "прочитаем $from 22 стиха, $word описывает.")
+                assertEquals(
+                    45, gated.watchBook,
+                    "\"$from 22 стиха\" must not corroborate \"$word\" into book $book",
+                )
+            }
+            val corroborated = sticky(book = 45, chapter = 3)
+            feed(corroborated, "в 22 главе $word написано.")
+            assertEquals(
+                book, corroborated.watchBook,
+                "an ordinary chapter citation must still resolve \"$word\" to book $book",
+            )
+        }
     }
 }

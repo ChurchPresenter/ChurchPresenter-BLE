@@ -31,6 +31,26 @@ object NumberWords {
         return null
     }
 
+    /**
+     * Length of the number stem [parseToken] matched in [token], or 0 when it matched no word stem
+     * (no match at all, or a pure-digit match, where "how long was the stem" has no meaning).
+     *
+     * Exists so a caller can weigh this lexicon against another one instead of treating a stem hit
+     * as final — `ReferenceWatcher.isNumberRatherThanBook` compares it against the book stem, since
+     * a book name beginning with a number stem ("Второзакония" over "втор") is otherwise swallowed.
+     */
+    fun matchedStemLength(token: String): Int {
+        val t = token.trim().lowercase()
+        if (t.isEmpty() || t in NOT_NUMBERS) return 0
+        if (DIGIT_ORD.find(t) != null) return 0
+        for ((stem, _) in STEMS) {
+            if (!t.startsWith(stem)) continue
+            val ending = t.substring(stem.length)
+            if (ending.isEmpty() || ending[0] in VALID_ENDING_START) return stem.length
+        }
+        return 0
+    }
+
     // Russian ordinal/cardinal endings start with a vowel, soft sign, or й; Latin endings with a
     // consonant cluster (th/st/nd/rd) handled by DIGIT_ORD only. Used to gate stem matches.
     private val VALID_ENDING_START = "йяеёьоаиуыю".toSet()

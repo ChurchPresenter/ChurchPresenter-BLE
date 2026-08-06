@@ -37,10 +37,10 @@ object Config {
     // present in the text window ("verse-side coverage", AgreementScorer.coverage). Verse-side —
     // not query-side — because the 2-segment sliding window dilutes a query-normalized overlap to
     // a ~50% ceiling even when a verse is read verbatim (the documented sequential-reading FN
-    // class; Matthew 9:37 in the 2026-07-08 session). Verses with < 4 distinct scoring words must
+    // class; Matthew 9:37 in an earlier session). Verses with < 4 distinct scoring words must
     // be fully covered instead (spurious-full-coverage guard).
     //
-    // User-facing knob (2026-07-15): this is the ONLY tuning constant behind the "Verse speed"
+    // User-facing knob (an earlier pass): this is the ONLY tuning constant behind the "Verse speed"
     // chip (BibleTab.kt) — see applyContinuationSpeed below. "Balanced" keeps this at the
     // original 0.5; "Fast" drops it to 0.45, chosen from a real sweep (0.5/0.45/0.4/0.35/0.3)
     // across 4 archived sessions (85 ground-truth references total): 0.45 was the only value
@@ -75,7 +75,7 @@ object Config {
     // than the global reverse lookup without raising false-positive risk — protected instead by the
     // margin-over-runner-up gate below (same safety pattern as reverseMinScoreRatio). Starting values;
     // tune against real training data.
-    // Raised 0.10 -> 0.20 (2026-07-09): the 2026-07-08 session's replay showed 94 chapter-history
+    // Raised 0.10 -> 0.20 (an earlier pass): an earlier session's replay showed 94 chapter-history
     // emissions with ZERO true positives at the old floor — pure operator chip spam. Values below
     // remain provisional until more services are recorded; the structural gates (candidate cap +
     // coverage floors) carry most of the cut.
@@ -87,10 +87,10 @@ object Config {
     // (chapterHistory itself stays unbounded for diagnostics; only the SCAN is capped).
     var chapterHistoryMaxCandidates = 5
 
-    // Retired 2026-07-24: revisiting an EARLIER chapter without restating it turned out not to earn
+    // Retired an earlier pass: revisiting an EARLIER chapter without restating it turned out not to earn
     // its keep. Across ten recorded services the operator never once accepted a `chapter-history`
     // suggestion, and across the eight replayable ones the tier produced a single true positive; the
-    // 2026-07-08 replay had already shown 94 emissions with zero. The pool now holds the current
+    // an earlier pass replay had already shown 94 emissions with zero. The pool now holds the current
     // sticky chapter only, which is the case that actually fires (`chapter-scan`: 12 of 13 correct).
     // Kept as a flag rather than deleted — the mechanism is sound and cheap to re-enable if a service
     // ever shows a preacher genuinely working two chapters at once; turn it on and check

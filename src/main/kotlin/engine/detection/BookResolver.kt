@@ -74,7 +74,11 @@ object BookResolver {
         add(22, "song of solomon", "song of songs", "song", "sos", "songs", "canticles", "cant")
         add(23, "isaiah", "isa")
         add(24, "jeremiah", "jer", "je")
-        add(25, "lamentations", "lam", "la")
+        // "lamentations of jeremiah" is how the live machine translation renders «Плач Иеремии»
+        // (an earlier pass). Without the compound the greedy join takes "lamentations",
+        // then "jeremiah" as a second book atom, and interpret() keeps the LAST book before the
+        // numbers — so the English track named Jeremiah for a Lamentations sermon.
+        add(25, "lamentations", "lamentations of jeremiah", "lam", "la")
         add(26, "ezekiel", "ezek", "eze", "ezk")
         add(27, "daniel", "dan", "da", "dn")
         add(28, "hosea", "hos", "ho")
@@ -125,7 +129,9 @@ object BookResolver {
         add(5, "второзаконие", "втор")
         add(6, "иисуса навина", "иис.нав.", "нав")
         add(7, "судей", "суд")
-        add(8, "руфь")
+        // Genitive too: "Книга Руфи" is the book's ordinary Russian title, and at 4 chars it
+        // inherits the short-alias corroboration gate, so it stays refused in bare prose.
+        add(8, "руфь", "руфи")
         add(9, "1 царств", "1-я царств", "1цар", "1 царство")
         add(10, "2 царств", "2-я царств", "2цар", "2 царство")
         add(11, "3 царств", "3-я царств", "3цар", "3 царство")
@@ -135,7 +141,7 @@ object BookResolver {
         add(15, "ездра", "езд")
         add(16, "неемия", "неем")
         add(17, "есфирь", "есф")
-        add(18, "иов")
+        add(18, "иов", "иова")   // genitive "Книга Иова"; ≤4 chars, so still gated in prose
         add(19, "псалтирь", "псалтырь", "псалом", "пс")
         add(20, "притчи", "прит", "при")
         add(21, "екклесиаст", "екк")
@@ -143,13 +149,16 @@ object BookResolver {
         add(23, "исаия", "исайя", "ис")
         add(24, "иеремия", "иер")
         add(25, "плач иеремии", "плач")
-        add(26, "иезекиль", "иез")
+        // "иезекииль" is the correct Synodal spelling; the table carried only the one-и typo
+        // "иезекиль" until an earlier pass, so neither "Иезекииль" nor "Иезекииля" resolved at all.
+        // Both spellings are kept — the STT produces either.
+        add(26, "иезекииль", "иезекиль", "иез")
         add(27, "даниил", "дан")
         add(28, "осия", "ос")
         add(29, "иоиль")
         add(30, "амос")
         add(31, "авдий", "авд")
-        add(32, "иона")
+        add(32, "иона", "ионы")  // genitive "Книга Ионы"; ≤4 chars, so still gated in prose
         add(33, "михей", "мих")
         add(34, "наум")
         add(35, "аввакум", "авв")
@@ -173,7 +182,7 @@ object BookResolver {
         add(53, "2 фессалоникийцам", "2фес")
         add(54, "1 тимофею", "1тим")
         add(55, "2 тимофею", "2тим")
-        add(56, "титу", "тит")
+        add(56, "титу", "тита", "тит")  // "Послание к Титу" / "Послание Тита"
         add(57, "филимону", "флм")
         add(58, "евреям", "евр")
         add(59, "иакова", "иак")
@@ -635,6 +644,38 @@ object BookResolver {
         _stemIndex.firstOrNull { token.length >= it.first.length && token.startsWith(it.first) }
             ?.let { StemMatch(it.second, it.first) }
 
+    // ── Inflection-tolerant MULTI-word resolution ───────────────────────────────
+    // A multi-word name inflects in both halves ("Плач Иеремии" → "Плача Иеремии"), and the STT
+    // does not always agree with the alias table on which case each half is in. Exact lookup then
+    // misses the phrase and the words classify independently — which is worse than not matching at
+    // all when the second word is itself a book name: "книгу пророка Плача Иеремия" produced
+    // Lamentations THEN Jeremiah, and ReferenceWatcher.interpret takes the last book before the
+    // numbers, so the whole an earlier pass sermon ran against Jeremiah 3 instead of Lamentations 3.
+    // Keying by per-word stem collapses both halves' endings ("плача иеремия" and "плач иеремии"
+    // both key to "плач иерем"), so any case combination the speaker or the STT produces resolves.
+    private fun stemPhrase(words: List<String>): String = words.joinToString(" ") { stemOf(it) }
+
+    private var _multiWordStems: Map<String, Int> = buildMultiWordStems(ALIASES)
+
+    private fun buildMultiWordStems(aliases: Map<String, Int>): Map<String, Int> =
+        aliases.entries
+            .filter { it.key.contains(' ') && it.key.any { c -> c in 'а'..'я' } }
+            .map { stemPhrase(it.key.split(' ')) to it.value }
+            // Same collision rule as the single-token index: if two books share a stemmed phrase,
+            // drop both rather than guess.
+            .groupBy { it.first }
+            .filter { (_, v) -> v.map { it.second }.distinct().size == 1 }
+            .map { (stem, v) -> stem to v.first().second }
+            .toMap()
+
+    /**
+     * Resolves a run of [words] to a book by matching every word's stem against a multi-word alias.
+     * Returns null unless the whole run stems to exactly one known multi-word name — this never
+     * matches a single token, so it cannot widen what a bare word resolves to.
+     */
+    fun resolveStemPhrase(words: List<String>): Int? =
+        if (words.size < 2) null else _multiWordStems[stemPhrase(words)]
+
     // Stems that exist ONLY because an SPB module registered its own book name — i.e. never vetted
     // against real transcripts the way the static table above was. A module is free to name a book
     // with a word that is also ordinary vocabulary (the Russian Synodal names book 65 "Иуда", the
@@ -658,6 +699,7 @@ object BookResolver {
         }
         _aliasesByLength = combined.entries.sortedByDescending { it.key.length }.map { it.key to it.value }
         _stemIndex = buildStemIndex(combined)
+        _multiWordStems = buildMultiWordStems(combined)
         val staticStems = buildStemIndex(ALIASES).map { it.first }.toSet()
         _registeredOnlyStems = _stemIndex.map { it.first }.filterNot { it in staticStems }.toSet()
     }

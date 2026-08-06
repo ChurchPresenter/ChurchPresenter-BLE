@@ -130,6 +130,24 @@ object ReferenceWatcher {
     internal val AMBIGUOUS_BOOK_FORMS: Map<String, Int> = mapOf(
         "иоанну" to 43, "иоанне" to 43,
         "бытие" to 1, "быт" to 1,
+        // A prophet's name is also his book's name, and a preacher expounding the book narrates
+        // the man constantly ("Иеремия говорит…"). Each bare mention re-pointed the sticky, which
+        // is how that sermon — preached from Lamentations 3 — produced three tier-1
+        // auto-go-live detections in Jeremiah (3:25, 22:22, 18:18) and one CHAPTER-CLEARED row.
+        //
+        // Nominative only, exactly as "иоанну"/"иоанне" above are listed and "иоанна"/"иоанн" are
+        // not: the oblique cases are what a citation uses ("в 22 главе Иеремии", "книга пророка
+        // Иеремии"), so gating them would cost real references, while the nominative is the form
+        // that heads a sentence about the man. The one nominative citation shape — a bare name
+        // followed by its numbers, "Иеремия 33:3" — keeps the digit in reach and passes the gate.
+        "иеремия" to 24,
+        // "judas" is the GERMAN name for Jude, but the alias table is language-agnostic at lookup,
+        // so it fires on the English track too — where "Judas" is the betrayer, a proper noun in
+        // essentially every Passion sermon, and at 5 chars it clears SHORT_ALIAS_MAX_LEN and
+        // resolved unconditionally. Exactly the Russian «Иуда» bug (fixed an earlier pass) on the EN
+        // side, which no test covered because that session's MT garbled the word. A real German
+        // citation keeps its number in reach and still passes the gate.
+        "judas" to 65,
     )
 
     // Some ambiguous words are ambiguous in EVERY inflected form — "бытие"/"бытия"/"бытием"/"бытии"
@@ -140,16 +158,16 @@ object ReferenceWatcher {
     // folding them in here would wrongly demand corroboration for those already-correct forms).
     // Gate the inflection-tolerant resolveStem() path (classify) by stem instead of exact token so
     // every case ending is covered without hardcoding each one — real trace: sticky-log
-    // 2026-07-12T22:58:39Z, genitive "бытия" (a machine-translation tail of "...level of his
+    // a recorded moment, genitive "бытия" (a machine-translation tail of "...level of his
     // being") slipped through the exact-token gate and cleared a sticky chapter mid-sermon.
     internal val AMBIGUOUS_BOOK_STEMS: Map<String, Int> = mapOf(
         BookResolver.stemOf("бытие") to 1,
         // "откр" is an abbreviation alias for Откровение, and it is also the prefix of a whole family
-        // of ordinary verbs (открыть/открой/открыл/открывает — "to open"). The 2026-07-09
+        // of ordinary verbs (открыть/открой/открыл/открывает — "to open"). The an earlier pass
         // over-extension gate cannot separate them: the stem is only 4 chars, so the common forms sit
         // 1-2 chars past it, inside the allowance for a normal grammatical ending. Real trace:
         // "...чтобы сердце открой." flipped the sticky book to Revelation mid-sermon
-        // (sticky-log-2026-07-19_183945, 23:26:00Z). Costs no real citation — a spelled-out
+        // (sticky-log-S12,. Costs no real citation — a spelled-out
         // "Откровении" resolves through the longer "откровен" stem (resolveStem takes the longest
         // match), and the abbreviation itself is only ever spoken next to a chapter number.
         BookResolver.stemOf("откр") to 66,
@@ -273,7 +291,7 @@ object ReferenceWatcher {
                 continue
             }
             // The same citation with the ordinal AFTER the book: "Иоанн говорит в первом послании,
-            // в первой главе шестом стихе" (2026-07-22_183657 row 928). Only the look-back form was
+            // в первой главе шестом стихе" (S13 row 928). Only the look-back form was
             // handled, so this resolved to the Gospel and shipped as an explicit tier-1 — auto-go-live
             // with the wrong book, while the reverse lookup found the real 1 John 1:6 seconds later.
             val numberedBookAhead = resolveNumberedBookAhead(tokens, i)
@@ -305,7 +323,7 @@ object ReferenceWatcher {
                     // the number within reach ("Job chapter 3"), so recall survives the gate.
                     // A version name is not a citation: "New King James version" names the module the
                     // speaker is reading FROM. Real trace: it flipped the sticky book to James in the
-                    // middle of Psalm 14 (2026-07-12_173830, 22:54:59Z).
+                    // middle of Psalm 14 (S09,.
                     if (len == 1 && isVersionNamePart(tokens, i)) break
                     if (len == 1 &&
                         (AMBIGUOUS_BOOK_FORMS[phrase] != null || isShortAlias(phrase, bookNum)) &&
@@ -319,6 +337,20 @@ object ReferenceWatcher {
                     matched = true
                     break
                 }
+                // Same join, but matching each word by stem — catches a multi-word name whose
+                // halves are inflected differently than the alias table spells them ("Плача
+                // Иеремия" for "плач иеремии"). Tried inside the same longest-first loop so a
+                // 2-word stem hit still beats the 1-word exact alias for its second word, which
+                // is the whole point: otherwise "иеремия" wins on its own and names Jeremiah.
+                if (len > 1) {
+                    val phraseBook = BookResolver.resolveStemPhrase(tokens.subList(i, i + len))
+                    if (phraseBook != null) {
+                        atoms.add(Atom.Book(phraseBook))
+                        i += len
+                        matched = true
+                        break
+                    }
+                }
             }
             if (matched) continue
 
@@ -326,7 +358,7 @@ object ReferenceWatcher {
             // Inflection-tolerant single-token book match (Матфея, Даниила, Римлянам…), but not for
             // tokens that are numbers/keywords/separators.
             if (tok != ":" && tok != "-" && !isChapKw(tok) && !isVerseKw(tok) &&
-                tok !in RANGE_WORDS && tok !in LIST_WORDS && NumberWords.parseToken(tok) == null
+                tok !in RANGE_WORDS && tok !in LIST_WORDS && !isNumberRatherThanBook(tok)
             ) {
                 BookResolver.resolveStem(tok)?.let { match ->
                     // Over-extension gate: a token much longer than the alias stem it matched is
@@ -341,14 +373,14 @@ object ReferenceWatcher {
                     // here at extension 0:
                     //  - [shortAliasRefused]: the exact branch above just refused this very token for
                     //    want of corroboration, and this branch would re-admit it ("плач" → Lamentations
-                    //    off ordinary grief vocabulary, sticky-log-2026-07-19_102718 14:28:44Z).
+                    //    off ordinary grief vocabulary, sticky-log-S10.
                     //  - [BookResolver.isRegisteredOnlyStem]: the exact branch never sees names an SPB
                     //    module registered at startup (it reads the static table), so those reach only
                     //    this branch — ungated, however short or ordinary the word. The Russian Synodal
                     //    module names book 65 "Иуда" and book 28 "Осия", both everyday words: a sermon
                     //    illustration about Judas flipped the sticky book to Jude
-                    //    (sticky-log-2026-07-19_183945, 22:47:04Z), and "осия" held Hosea as the wrong
-                    //    sticky book for ~40 minutes through a Psalm 14 passage (2026-07-12_173830).
+                    //    (sticky-log-S12,, and "осия" held Hosea as the wrong
+                    //    sticky book for ~40 minutes through a Psalm 14 passage (S09).
                     // Inflected forms are untouched — "Луки"/"Марка" resolve through the vetted static
                     // stems and stay unconditional.
                     val overExtended = tok.length - match.stem.length >= STEM_MAX_EXTENSION_UNCORROBORATED
@@ -378,6 +410,28 @@ object ReferenceWatcher {
             i++
         }
         return atoms
+    }
+
+    /**
+     * True when [t] should be read as a number rather than offered to the book-stem resolver.
+     *
+     * `NumberWords.parseToken` matches a number stem plus any plausible grammatical ending, so a
+     * book name that merely *begins* with one is swallowed whole: "Второзакония" — the standard
+     * Russian title of Deuteronomy — is stem "втор" (2) followed by "озакония", whose leading
+     * vowel is a valid ending, so it parsed as the number 2 and never reached [BookResolver].
+     * Exact aliases escaped this because the greedy alias branch runs first; only the inflected
+     * forms fell through, which is why "Второзаконие" worked and "Второзакония" did not.
+     *
+     * Resolve it the way any lexicon collision should be: longest match wins. "второзакония"
+     * matches book stem "второзакон" (10) against number stem "втор" (4), so it is a book;
+     * "второй" matches "втор" both ways (4 vs 4) and stays the number it is. Same shape as the
+     * `NOT_NUMBERS` "семья"/"семь" fix, but as a rule instead of a list, so the next such book
+     * name needs no new entry.
+     */
+    private fun isNumberRatherThanBook(t: String): Boolean {
+        if (NumberWords.parseToken(t) == null) return false
+        val bookStem = BookResolver.resolveStem(t)?.stem ?: return true
+        return bookStem.length <= NumberWords.matchedStemLength(t)
     }
 
     private fun isChapKw(t: String): Boolean =
@@ -509,7 +563,14 @@ object ReferenceWatcher {
     private fun hasAmbiguousBookCorroboration(tokens: List<String>, i: Int): Boolean {
         for (d in 1..2) {
             if (isCitationNumber(tokens, i + d)) return true
-            if (isCitationNumber(tokens, i - d)) return true
+            // A number introduced by "с"/"from" opens a VERSE span inside the book already being
+            // read ("Если мы прочитаем с 22 стиха…") — the same binding interpret()'s fromMark
+            // enforces. It therefore cannot double as the chapter of a book named after it, so it
+            // must not corroborate one: in that sermon that clause let the following
+            // "Иеремия описывает" claim the sticky off Lamentations, and the drift produced the
+            // wrong-book Jeremiah 18:18 two utterances later. A number reached by an ordinary
+            // preposition ("в 3 главе Бытие") is untouched.
+            if (isCitationNumber(tokens, i - d) && tokens.getOrNull(i - d - 1) !in FROM_WORDS) return true
         }
         for (d in 1..2) {
             val back = tokens.getOrNull(i - d) ?: continue
@@ -564,7 +625,7 @@ object ReferenceWatcher {
                 // The bare "book N" convention only applies while nothing has claimed a verse yet.
                 // Once verseStart is bound, a leftover number is the rest of THAT reference — the end
                 // of a range, or another verse in a list — never a chapter. Real trace: "стихи 3-го
-                // стиха по 6-й" (2026-07-22_183657 seg 797, announcing Psalm 24:3-6 against a live
+                // стиха по 6-й" (S13 seg 797, announcing Psalm 24:3-6 against a live
                 // sticky) bound verseStart=3 through the verse keyword, then this fallback promoted
                 // the range end 6 to chapter, emitting against a chapter the speaker never named and
                 // dropping the operator's verses 4-6 on the floor.
