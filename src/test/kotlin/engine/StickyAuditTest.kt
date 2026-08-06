@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
  *
  * UNEXPLAINED is the category that has to stay trustworthy — it means "a jump no alias in the text
  * accounts for", i.e. the thing to look at first. Anything the live engine resolves by a route the
- * auditor doesn't ask about lands there wrongly and buries the real ones: across an earlier pass
+ * auditor doesn't ask about lands there wrongly and buries the real ones: across the recorded
  * sessions, 4 of 5 UNEXPLAINED rows were perfectly ordinary numbered-book citations.
  */
 class StickyAuditTest {

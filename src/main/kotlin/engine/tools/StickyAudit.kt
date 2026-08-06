@@ -66,7 +66,7 @@ private fun parseRow(line: String): StickyRow? = runCatching {
 
 /**
  * [CHAPTER_CLEARED] is a pure structural check (no alias knowledge needed) — the exact shape of the
- * same-book-reflush bug fixed an earlier pass. For an actual book change, the remaining categories judge
+ * same-book-reflush bug, since fixed. For an actual book change, the remaining categories judge
  * how well the new book is textually supported.
  *
  * A first version of this classifier flagged *any* stem-fallback match as risky, which turned out to

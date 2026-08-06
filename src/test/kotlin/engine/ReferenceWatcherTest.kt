@@ -579,7 +579,7 @@ class ReferenceWatcherTest {
         assertEquals(Triple(1, 1, 1), r.triple())
     }
 
-    // ── English short aliases on the translation track (an earlier pass) ────────────────
+    // ── English short aliases on the translation track ────────────────
     //
     // The ≤4-char gate is keyed on the exact token, so an English plural or possessive walks straight
     // past it — "song" is gated, "songs" is not. And a Bible *version* name carries a book name
@@ -632,7 +632,7 @@ class ReferenceWatcherTest {
         assertEquals(Triple(59, 1, 5), run("James, chapter 1, verse 5.").single().triple())
     }
 
-    // ── SPB-registered short aliases that are their own stem (an earlier pass) ─────
+    // ── SPB-registered short aliases that are their own stem ─────
     //
     // BookResolver.register() folds every loaded SPB module's book names into the alias table at
     // startup, so what the engine resolves live is wider than the static table these tests otherwise
@@ -792,8 +792,8 @@ class ReferenceWatcherTest {
     }
 
     @Test fun `открой in ordinary prose does not hijack the sticky book (real session trace)`() {
-        // Real trace (sticky-log-S12.jsonl, ts a recorded moment): a passage
-        // about opening a door flipped the sticky from Luke 11 to Revelation. The an earlier pass
+        // Real trace (sticky-log-S12.jsonl): a passage
+        // about opening a door flipped the sticky from Luke 11 to Revelation. The stem
         // over-extension gate does not reach it — "откр" (the Revelation abbreviation alias) is only
         // 4 chars, and Russian verb forms sit 1-2 chars past it: "открой" is +2, under the >=3
         // threshold, so it resolved unconditionally. ("открываем"/"открывает", which stickyAudit
@@ -1086,7 +1086,7 @@ class ReferenceWatcherTest {
     }
 
 
-    // ── FP gates: stem over-extension + short aliases (Known Engine Gaps, closed an earlier pass) ──────
+    // ── FP gates: stem over-extension + short aliases (Known Engine Gaps, since closed) ──────
 
     @Test fun `short alias with adjacent number still resolves`() {
         // Gate B must not cost recall when the citation carries its number nearby.
@@ -1137,7 +1137,7 @@ class ReferenceWatcherTest {
         }
     }
 
-    // ── Colon-bound citations survive trailing prose (found via DB row 843, an earlier pass) ────────
+    // ── Colon-bound citations survive trailing prose (found via DB row 843) ────────
 
     @Test fun `colon citation followed by prose keeps its verse`() {
         // Real transcript row 843: explicit dot-form citation + the quoted verse text. The prose
@@ -1199,7 +1199,7 @@ class ReferenceWatcherTest {
         )
     }
 
-    // ── Keyword-first citations (an earlier pass) ────────
+    // ── Keyword-first citations ────────
 
     @Test fun `keyword-first russian citation parses in order`() {
         // Was inverted before the pending-keyword fix: chapter=3, verse=26.
@@ -1233,7 +1233,7 @@ class ReferenceWatcherTest {
         assertTrue(refs.isEmpty(), "keyword across prose must not bind, got $refs")
     }
 
-    // ── Multi-word book names and the author-name trap (an earlier pass) ────────────
+    // ── Multi-word book names and the author-name trap ────────────
 
     @Test fun `Плач Иеремии resolves even when both words are misinflected`() {
         // GATE: classify — BookResolver.resolveStemPhrase joins a multi-word name by per-word
@@ -1284,7 +1284,7 @@ class ReferenceWatcherTest {
     }
 
     @Test fun `explicit Jeremiah citation still resolves`() {
-        // The gate above must not cost the real citation: an earlier pass detected Jeremiah 33:3
+        // The gate above must not cost the real citation: the engine detected Jeremiah 33:3
         // correctly and the operator accepted it.
         val refs = run("Иеремия 33 глава 3 стих.")
         assertTrue(

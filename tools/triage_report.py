@@ -124,8 +124,8 @@ def main():
         lives.append({
             "ts": ts,
             "book": l.get("book"), "ch": l.get("chapter"), "v": l.get("verseStart"),
-            # Canonical since an earlier pass, recognised by the display* fields ChurchPresenter
-            # started writing alongside the canonical ones. See ReplayEval.GroundTruth.
+            # Canonical rows are recognised by the display* fields ChurchPresenter writes
+            # alongside the canonical ones. See ReplayEval.GroundTruth.
             "canonical": "displayChapter" in l,
             "auto": l.get("autoFollow", False),
         })
@@ -193,7 +193,7 @@ def main():
             # for one in the symmetric ±before window: the engine routinely confirms a verse a
             # few seconds AFTER the operator has already clicked it (median latency runs from
             # -4s to +5s, tail to +12s). That is a latency problem, not a recall one, and
-            # scoring it as FN *and* FP at once is what made an earlier pass sessions read as ~47%
+            # scoring it as FN *and* FP at once is what made recorded sessions read as ~47%
             # recall when the engine had in fact named 85% of the operator's verses.
             late = [d for d in dets
                     if lt + wa_ms < d["ts"] <= lt + wb_ms and ref_of(live, d) == (b, c, v)]
