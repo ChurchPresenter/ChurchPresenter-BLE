@@ -30,8 +30,9 @@ object ReplayEval {
 
     /**
      * One operator go-live. [canonical] is true when the row is in the engine's module-independent
-     * canonical numbering — recognised by the `display*` fields ChurchPresenter started writing on
-     * an earlier pass. Older recordings carry the primary Bible's own numbering instead, which only agrees
+     * canonical numbering — recognised by the `display*` fields ChurchPresenter writes alongside
+     * them. Recordings made before those fields existed carry the primary Bible's own numbering
+     * instead, which only agrees
      * with a replay when that replay loads the very same module (this machine has two RST files that
      * number Psalms differently), so they are matched the old way.
      */
@@ -112,7 +113,7 @@ object ReplayEval {
         println()
         // A go-live is covered when ANY detection names that verse inside the window. Matching
         // one-truth-row-per-detection instead would report the same verse re-shown later in the
-        // service as a miss: in an earlier pass the operator walked Psalm 24 twice, and 3 of the 5
+        // service as a miss: in one recorded service the operator walked Psalm 24 twice, and 3 of the 5
         // reported FNs were simply the second showing of a verse the engine had already found.
         val fns = truth.filterIndexed { i, t ->
             result.events.indices.none { j ->

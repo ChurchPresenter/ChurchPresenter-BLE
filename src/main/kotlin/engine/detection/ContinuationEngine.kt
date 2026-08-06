@@ -41,8 +41,8 @@ object ContinuationEngine {
             }
             // Only the most recently visited chapters — the sermon's ACTIVE context. Scanning
             // every chapter touched all service produced two orders of magnitude more junk than
-            // hits on real data (94 emissions / 0 TPs in an earlier replay). Off by default
-            // since an earlier pass — see Config.chapterHistoryEnabled for the evidence.
+            // hits on real data (94 emissions / 0 TPs in an earlier replay). Off by default —
+            // see Config.chapterHistoryEnabled for the evidence.
             if (Config.chapterHistoryEnabled) {
                 addAll(state.chapterHistory.toList().takeLast(Config.chapterHistoryMaxCandidates))
             }

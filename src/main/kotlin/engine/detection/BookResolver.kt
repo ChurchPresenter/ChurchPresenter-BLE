@@ -74,8 +74,8 @@ object BookResolver {
         add(22, "song of solomon", "song of songs", "song", "sos", "songs", "canticles", "cant")
         add(23, "isaiah", "isa")
         add(24, "jeremiah", "jer", "je")
-        // "lamentations of jeremiah" is how the live machine translation renders «Плач Иеремии»
-        // (an earlier pass). Without the compound the greedy join takes "lamentations",
+        // "lamentations of jeremiah" is how the live machine translation renders «Плач Иеремии».
+        // Without the compound the greedy join takes "lamentations",
         // then "jeremiah" as a second book atom, and interpret() keeps the LAST book before the
         // numbers — so the English track named Jeremiah for a Lamentations sermon.
         add(25, "lamentations", "lamentations of jeremiah", "lam", "la")
@@ -150,7 +150,7 @@ object BookResolver {
         add(24, "иеремия", "иер")
         add(25, "плач иеремии", "плач")
         // "иезекииль" is the correct Synodal spelling; the table carried only the one-и typo
-        // "иезекиль" until an earlier pass, so neither "Иезекииль" nor "Иезекииля" resolved at all.
+        // "иезекиль", so neither "Иезекииль" nor "Иезекииля" resolved at all until this was added.
         // Both spellings are kept — the STT produces either.
         add(26, "иезекииль", "иезекиль", "иез")
         add(27, "даниил", "дан")
@@ -650,7 +650,7 @@ object BookResolver {
     // misses the phrase and the words classify independently — which is worse than not matching at
     // all when the second word is itself a book name: "книгу пророка Плача Иеремия" produced
     // Lamentations THEN Jeremiah, and ReferenceWatcher.interpret takes the last book before the
-    // numbers, so the whole an earlier pass sermon ran against Jeremiah 3 instead of Lamentations 3.
+    // numbers, so a whole recorded sermon ran against Jeremiah 3 instead of Lamentations 3.
     // Keying by per-word stem collapses both halves' endings ("плача иеремия" and "плач иеремии"
     // both key to "плач иерем"), so any case combination the speaker or the STT produces resolves.
     private fun stemPhrase(words: List<String>): String = words.joinToString(" ") { stemOf(it) }

@@ -144,7 +144,7 @@ object ReferenceWatcher {
         // "judas" is the GERMAN name for Jude, but the alias table is language-agnostic at lookup,
         // so it fires on the English track too — where "Judas" is the betrayer, a proper noun in
         // essentially every Passion sermon, and at 5 chars it clears SHORT_ALIAS_MAX_LEN and
-        // resolved unconditionally. Exactly the Russian «Иуда» bug (fixed an earlier pass) on the EN
+        // resolved unconditionally. Exactly the Russian «Иуда» bug (since fixed) on the EN
         // side, which no test covered because that session's MT garbled the word. A real German
         // citation keeps its number in reach and still passes the gate.
         "judas" to 65,
@@ -163,11 +163,11 @@ object ReferenceWatcher {
     internal val AMBIGUOUS_BOOK_STEMS: Map<String, Int> = mapOf(
         BookResolver.stemOf("бытие") to 1,
         // "откр" is an abbreviation alias for Откровение, and it is also the prefix of a whole family
-        // of ordinary verbs (открыть/открой/открыл/открывает — "to open"). The an earlier pass
+        // of ordinary verbs (открыть/открой/открыл/открывает — "to open"). The stem
         // over-extension gate cannot separate them: the stem is only 4 chars, so the common forms sit
         // 1-2 chars past it, inside the allowance for a normal grammatical ending. Real trace:
         // "...чтобы сердце открой." flipped the sticky book to Revelation mid-sermon
-        // (sticky-log-S12,. Costs no real citation — a spelled-out
+        // (sticky-log-S12). Costs no real citation — a spelled-out
         // "Откровении" resolves through the longer "откровен" stem (resolveStem takes the longest
         // match), and the abbreviation itself is only ever spoken next to a chapter number.
         BookResolver.stemOf("откр") to 66,
@@ -323,7 +323,7 @@ object ReferenceWatcher {
                     // the number within reach ("Job chapter 3"), so recall survives the gate.
                     // A version name is not a citation: "New King James version" names the module the
                     // speaker is reading FROM. Real trace: it flipped the sticky book to James in the
-                    // middle of Psalm 14 (S09,.
+                    // middle of Psalm 14 (S09).
                     if (len == 1 && isVersionNamePart(tokens, i)) break
                     if (len == 1 &&
                         (AMBIGUOUS_BOOK_FORMS[phrase] != null || isShortAlias(phrase, bookNum)) &&

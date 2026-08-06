@@ -82,7 +82,7 @@ class ContinuationEngineTest {
 
     // ── Chapter history (revisiting an earlier chapter without restating book/chapter) ──────────
     //
-    // Retired an earlier pass (`Config.chapterHistoryEnabled`, default false): across ten recorded
+    // Retired (`Config.chapterHistoryEnabled`, default false): across ten recorded
     // services the operator never accepted a `chapter-history` suggestion, and the tier produced one
     // true positive across the eight replayable ones. The mechanism is kept behind the flag, so these
     // tests enable it explicitly — and [chapter history is not consulted by default] guards the
@@ -151,7 +151,7 @@ class ContinuationEngineTest {
         assertEquals(listOf(40 to 3, 9 to 15), state.chapterHistory.toList())
     }
 
-    // ── Sequential check: verse-side coverage (an earlier pass) ──────────
+    // ── Sequential check: verse-side coverage ──────────
 
     private fun stateWithLastDetected(t: EngineTranslation, book: Int, chapter: Int, verse: Int,
                                       transcript: String, now: Long): UtteranceState {
@@ -191,7 +191,7 @@ class ContinuationEngineTest {
         assertNull(ContinuationEngine.check(state, listOf(t), now + 5_000))
     }
 
-    // ── "Verse speed" user knob (an earlier pass): Config.applyContinuationSpeed ──────────────────
+    // ── "Verse speed" user knob: Config.applyContinuationSpeed ──────────────────
 
     @Test fun `applyContinuationSpeed changes only continuationMinCoverage`() {
         try {
