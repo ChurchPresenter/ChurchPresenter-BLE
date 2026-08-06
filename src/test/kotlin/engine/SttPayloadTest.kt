@@ -57,11 +57,11 @@ class SttPayloadTest {
 
     @Test fun `real ids are read`() {
         val u = assertNotNull(
-            payload("""{"segment_id":"42","session_id":"2026-07-26_231144","speech_type":"Speaking",
+            payload("""{"segment_id":"42","session_id":"S14","speech_type":"Speaking",
                         "in_progress":{"text":"for god so loved"}}""")
         )
         assertEquals("42", u.segmentId)
-        assertEquals("2026-07-26_231144", u.sessionId)
+        assertEquals("S14", u.sessionId)
         assertEquals("Speaking", u.speechType)
     }
 

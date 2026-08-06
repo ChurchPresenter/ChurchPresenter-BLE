@@ -28,7 +28,7 @@ Given a live transcript like *"for God so loved the world"*, it emits:
   "tracks": ["transcription", "translation"],
   "segmentId": "1287",
   "sttStartTime": 12.48,
-  "sessionId": "2026-06-25_170206"
+  "sessionId": "S02"
 }
 ```
 

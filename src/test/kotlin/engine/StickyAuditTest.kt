@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
  *
  * UNEXPLAINED is the category that has to stay trustworthy — it means "a jump no alias in the text
  * accounts for", i.e. the thing to look at first. Anything the live engine resolves by a route the
- * auditor doesn't ask about lands there wrongly and buries the real ones: across the 2026-07-19
+ * auditor doesn't ask about lands there wrongly and buries the real ones: across an earlier pass
  * sessions, 4 of 5 UNEXPLAINED rows were perfectly ordinary numbered-book citations.
  */
 class StickyAuditTest {
@@ -24,14 +24,14 @@ class StickyAuditTest {
         newChapter: Int? = null,
         translation: String = "",
     ) = StickyRow(
-        ts = "2026-07-19T14:27:21.377287Z",
+        ts = "a-recorded-moment",
         prevBook = prevBook, prevChapter = prevChapter,
         newBook = newBook, newChapter = newChapter,
         transcript = transcript, translation = translation,
     )
 
     @Test fun `an ordinal numbered-book citation is explained, not flagged (real session trace)`() {
-        // sticky-log-2026-07-19_102718.jsonl, ts 15:15:48Z — "Во втором послании Коринфянам"
+        // sticky-log-S10.jsonl, — "Во втором послании Коринфянам"
         // resolves to 2 Corinthians through resolveNumberedBookAt; no alias spells it.
         val v = classify(
             row(
@@ -44,7 +44,7 @@ class StickyAuditTest {
     }
 
     @Test fun `a bare epistle marker defaulting to the first is explained too (real session trace)`() {
-        // sticky-log-2026-07-19_181920.jsonl, ts 22:23:15Z — "в послании к Иоанну" → 1 John by the
+        // sticky-log-S11.jsonl, — "в послании к Иоанну" → 1 John by the
         // John/Peter marker-alone convention.
         val v = classify(
             row("Апостол Павел очень интересно говорит в послании к Иоанну.", newBook = 62)

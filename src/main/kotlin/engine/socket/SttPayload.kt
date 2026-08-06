@@ -84,7 +84,7 @@ private fun buildUpdate(payload: JSONObject, textField: String): SttUpdate? {
 // detection behaves unchanged until the STT stream provides it. Drives the music precision gate.
 private fun speechTypeOf(payload: JSONObject): String? = payload.stringOrNull("speech_type")
 
-// Stable per-service session id (e.g. the STT db base name "2026-06-25_120605"), emitted as a
+// Stable per-service session id (e.g. the STT db base name "S01"), emitted as a
 // top-level `session_id` in every payload. Ties all three artifacts (STT db, engine detection-log,
 // CP live-references) with an exact join. Null until the STT app ships the field.
 private fun sessionIdOf(payload: JSONObject): String? = payload.stringOrNull("session_id")

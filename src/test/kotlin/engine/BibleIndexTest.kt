@@ -34,7 +34,7 @@ class BibleIndexTest {
     }
 
     @Test fun `garbled stt token is rescued via stem fuzzy expansion`() {
-        // "туждающие" is the real STT garble of "труждающиеся" from the 2026-07-08 session —
+        // "туждающие" is the real STT garble of "труждающиеся" from an earlier session —
         // 3 raw edits apart (unreachable by plain distance-1) but exactly one edit on the stems.
         val top = index.search("придите ко мне все туждающие обремененные успокою").firstOrNull()
         assertEquals(28, top?.verse?.verse, "garbled туждающие should still find Matthew 11:28")

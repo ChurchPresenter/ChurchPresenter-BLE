@@ -13,6 +13,11 @@ folder.
 
 ## Hard rules (before anything else)
 
+- **Committed files carry no dates, service ids or timestamps.** A session id is a service's date
+  AND start time, so it identifies when a specific congregation met; bare dates leak the same thing
+  indirectly, since work follows services. Refer to a service by its pseudonym (`S07`) — the
+  pseudonym→id mapping lives in `SESSIONS.md`, which is gitignored. Gap-table rows are
+  `Status: FIXED`, with no date.
 - **Never commit or push any artifact derived from recorded sessions** — goldens, detection/sticky
   logs, `.db` files, triage output. `src/test/resources/replay/` is gitignored and stays local;
   session data is private even when it's refs-only.
@@ -91,7 +96,7 @@ Discipline rules from past passes — follow these, they each earned their place
 
 9. **Write findings to `SESSIONS.md`, not `TRAINING_PLAN.md`.** `TRAINING_PLAN.md` is read at the
    start of every pass and must stay under ~250 lines, so a fix earns **one gap-table row**
-   (`Status: FIXED <date>`) plus — only when it changes how future work is done — a line in Workflow /
+   (`Status: FIXED`) plus — only when it changes how future work is done — a line in Workflow /
    Test Strategy / Conventions / Gotchas. The narrative (real traces, timestamps, sweep tables, golden
    diffs, rejected hypotheses) goes in `SESSIONS.md` under a dated `## YYYY-MM-DD` heading, newest
    first. `SESSIONS.md` is gitignored and is **not** read at the start of a pass — open it only to

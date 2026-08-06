@@ -13,7 +13,7 @@ import java.io.File
  * Offline auditor for sticky-log-*.jsonl (see DetectionLogger.logStickyChange / TRAINING_PLAN.md).
  * Classifies every recorded sticky-book/chapter jump so a human doesn't have to manually
  * cross-reference timestamps against the transcript to judge whether a jump was justified — the
- * exact multi-hour manual step that diagnosed the 2026-07-05 session's bugs. Uses the SAME
+ * exact multi-hour manual step that diagnosed an earlier session's bugs. Uses the SAME
  * BookResolver.ALIASES / BookResolver.resolveStem the live engine uses, so this can never drift out
  * of sync with what the detector actually does as the alias table grows.
  *
@@ -66,13 +66,13 @@ private fun parseRow(line: String): StickyRow? = runCatching {
 
 /**
  * [CHAPTER_CLEARED] is a pure structural check (no alias knowledge needed) — the exact shape of the
- * same-book-reflush bug fixed 2026-07-05. For an actual book change, the remaining categories judge
+ * same-book-reflush bug fixed an earlier pass. For an actual book change, the remaining categories judge
  * how well the new book is textually supported.
  *
  * A first version of this classifier flagged *any* stem-fallback match as risky, which turned out to
  * be nearly all of them — `resolveStem`'s inflection tolerance is how ordinary Russian book names
  * normally resolve (Лука → "Луки", Даниил → "Даниила"), not a sign of trouble on its own. Empirically
- * re-run against the 2026-07-05 session log, that version flagged 35 of 61 book changes — useless
+ * re-run against an earlier session log, that version flagged 35 of 61 book changes — useless
  * noise. What actually distinguished the three real bugs found that session:
  *  - "бытие"/"song"/"при" are SHORT exact aliases (<6 chars) that double as ordinary vocabulary —
  *    [SHORT_ALIAS].
@@ -103,7 +103,7 @@ internal fun classify(row: StickyRow): Verdict {
     // table under their spoken form — the ordinal is read off the surrounding tokens by
     // ReferenceWatcher.resolveNumberedBookAt. Ask that same function, or every such jump is filed
     // as UNEXPLAINED, which is the one category that must stay trustworthy: 4 of the 5 UNEXPLAINED
-    // rows across the 2026-07-19 sessions were correct resolutions of exactly this shape, and they
+    // rows across earlier sessions were correct resolutions of exactly this shape, and they
     // buried the one that was real.
     if (tokens.indices.any { ReferenceWatcher.resolveNumberedBookAt(tokens, it)?.first == newBook }) {
         return Verdict(row, Category.CONFIDENT, "")
@@ -207,7 +207,7 @@ private fun printReport(path: String, verdicts: List<Verdict>) {
     if (chapterCleared.isNotEmpty()) {
         println(
             "CHAPTER-CLEARED SAME-BOOK (${chapterCleared.size}) — should be ~zero after the " +
-                "2026-07-05 same-book-reflush fix; any hit is a regression or a new variant:"
+                "same-book-reflush fix; any hit is a regression or a new variant:"
         )
         chapterCleared.forEach(::printRow)
         println()
